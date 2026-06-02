@@ -1,0 +1,319 @@
+:root {
+  --bg: #f3f4f6;
+  --panel: #ffffff;
+  --border: #e2e4e8;
+  --ink: #1a1a1a;
+  --muted: #6b7280;
+  --accent: #2a6fdb;
+  --accent-ink: #ffffff;
+  font-family: system-ui, -apple-system, 'Helvetica Neue', 'PingFang TC', sans-serif;
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+  /* Kill iOS text selection, the long-press loupe (magnifier) and callout menu. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html,
+body,
+#root,
+.app {
+  margin: 0;
+  height: 100%;
+  /* Whole app must not scroll/zoom from stray touches, not just the canvas. */
+  touch-action: none;
+}
+
+body {
+  background: var(--bg);
+  overscroll-behavior: none;
+}
+
+.app {
+  position: relative;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* Floating chrome overlays -------------------------------------------------- */
+.overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 10px;
+  z-index: 10;
+  /* Container lets touches fall through to the canvas; panels opt back in. */
+  pointer-events: none;
+}
+.overlay-top {
+  top: 0;
+  align-items: flex-start;
+}
+.overlay-bottom {
+  bottom: 0;
+  align-items: flex-end;
+}
+.panel {
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  max-width: 96vw;
+}
+/* Inner components are transparent now; the .panel provides the surface. */
+.overlay .toolbar,
+.overlay .playback,
+.overlay .timeline {
+  background: none;
+  border: none;
+}
+
+/* While a pencil stroke is in progress, the chrome ignores touch so a resting
+   palm near the edges can't trigger buttons (pointer-events:none blocks the
+   synthesized click too). Restored shortly after the stroke ends. */
+.app.drawing .overlay > * {
+  pointer-events: none;
+}
+
+.export-menu {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+}
+
+/* Zoom controls ----------------------------------------------------------- */
+.zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+}
+.zoom .pct {
+  min-width: 56px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bottom panel (playback + collapsible timeline) -------------------------- */
+.bottom-panel {
+  display: flex;
+  flex-direction: column;
+}
+.bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+}
+.tl-toggle {
+  margin-left: auto;
+  width: 34px;
+}
+
+/* Buttons ----------------------------------------------------------------- */
+button {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+button:hover {
+  background: #f7f8fa;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.active {
+  border-color: var(--accent);
+  background: #eaf1fd;
+}
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+button.danger {
+  color: #c0392b;
+}
+button.play {
+  min-width: 88px;
+  font-weight: 600;
+}
+
+/* Toolbar ----------------------------------------------------------------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.toolbar[aria-disabled='true'] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.toolbar .group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.toolbar .group.grow {
+  margin-left: auto;
+}
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  padding: 0;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.swatch.active {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.toolbar input[type='color'] {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+}
+button.size {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+}
+button.size .dot {
+  background: var(--ink);
+  border-radius: 50%;
+  display: block;
+}
+
+/* Stage (full-bleed canvas) ----------------------------------------------- */
+.stage {
+  position: absolute;
+  inset: 0;
+  /* Gray behind the white "paper" so the page boundary is visible when zoomed. */
+  background: #e5e7eb;
+  overflow: hidden;
+}
+.draw-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  touch-action: none;
+}
+.stage-badge {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  background: rgba(26, 26, 26, 0.7);
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Playback ---------------------------------------------------------------- */
+.playback {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.playback .fps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.playback .loop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.playback .count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Timeline ---------------------------------------------------------------- */
+.timeline {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+.timeline .frame {
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background: #fafbfc;
+  padding: 4px;
+}
+.timeline .frame.current {
+  border-color: var(--accent);
+}
+.timeline .frame.playing {
+  border-color: #f4a261;
+}
+.thumb {
+  display: block;
+  width: 112px;
+  height: 84px;
+  border-radius: 4px;
+  background: #fff;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.frame-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 2px 0;
+}
+.frame-bar .del {
+  border: none;
+  background: none;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.frame-bar .del:hover {
+  color: #c0392b;
+  background: none;
+}
