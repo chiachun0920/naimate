@@ -17,10 +17,21 @@ export interface Stroke {
   size: number
 }
 
+/**
+ * Animation mode (locked per document once any content exists):
+ * - 'additive':    frame N shows every stroke with birthFrame <= N (strokes
+ *                  accumulate; editing an old frame propagates forward).
+ * - 'independent': frame N shows only strokes with birthFrame === N (each frame
+ *                  is its own cel; "完成這一幀" seeds the new frame with a copy
+ *                  of the previous one, then edits stay local to that frame).
+ */
+export type AnimMode = 'additive' | 'independent'
+
 export interface Doc {
   strokes: Stroke[]
   frameCount: number
   fps: number
+  mode: AnimMode
 }
 
 export type Tool = 'pen' | 'eraser'
@@ -49,8 +60,9 @@ export type Action =
   | { type: 'setTool'; tool: Tool }
   | { type: 'setFps'; fps: number }
   | { type: 'setPenOnly'; value: boolean }
+  | { type: 'setMode'; mode: AnimMode }
 
-export const DEFAULT_DOC: Doc = { strokes: [], frameCount: 1, fps: 6 }
+export const DEFAULT_DOC: Doc = { strokes: [], frameCount: 1, fps: 6, mode: 'additive' }
 
 export const DEFAULT_STATE: EditorState = {
   doc: DEFAULT_DOC,
@@ -67,9 +79,14 @@ function makeId(): string {
   return `s${idCounter}_${idCounter * 2654435761 % 1000000}`
 }
 
-/** Strokes visible at frame `index` (birthFrame <= index), in draw order. */
-export function framesUpTo(doc: Doc, index: number): Stroke[] {
-  return doc.strokes.filter((s) => s.birthFrame <= index)
+/** Whether a stroke is visible on frame `frameIndex` under the given mode. */
+export function isStrokeOnFrame(s: Stroke, frameIndex: number, mode: AnimMode): boolean {
+  return mode === 'independent' ? s.birthFrame === frameIndex : s.birthFrame <= frameIndex
+}
+
+/** The document has no content yet, so the animation mode is still selectable. */
+export function isDocEmpty(doc: Doc): boolean {
+  return doc.strokes.length === 0 && doc.frameCount === 1
 }
 
 export function reducer(state: EditorState, action: Action): EditorState {
@@ -91,8 +108,21 @@ export function reducer(state: EditorState, action: Action): EditorState {
         doc: { ...doc, strokes: doc.strokes.filter((s) => s.id !== action.id) },
       }
     case 'commitFrame': {
+      const newIndex = doc.frameCount
       const newCount = doc.frameCount + 1
-      return { ...state, doc: { ...doc, frameCount: newCount }, currentFrame: newCount - 1 }
+      // Independent mode: seed the new frame with an editable copy of the frame
+      // we're finishing, so each cel starts from the previous one.
+      const copied =
+        doc.mode === 'independent'
+          ? doc.strokes
+              .filter((s) => s.birthFrame === state.currentFrame)
+              .map((s) => ({ ...s, id: makeId(), birthFrame: newIndex }))
+          : []
+      return {
+        ...state,
+        doc: { ...doc, frameCount: newCount, strokes: [...doc.strokes, ...copied] },
+        currentFrame: newIndex,
+      }
     }
     case 'selectFrame':
       return { ...state, currentFrame: clamp(action.index, 0, doc.frameCount - 1) }
@@ -113,7 +143,7 @@ export function reducer(state: EditorState, action: Action): EditorState {
     case 'undo':
       return { ...state, doc: { ...doc, strokes: doc.strokes.slice(0, -1) } }
     case 'clear':
-      return { ...state, doc: { ...DEFAULT_DOC, fps: doc.fps }, currentFrame: 0 }
+      return { ...state, doc: { ...DEFAULT_DOC, fps: doc.fps, mode: doc.mode }, currentFrame: 0 }
     case 'loadDoc':
       return { ...state, doc: action.doc, currentFrame: clamp(0, 0, action.doc.frameCount - 1) }
     case 'setColor':
@@ -126,6 +156,10 @@ export function reducer(state: EditorState, action: Action): EditorState {
       return { ...state, doc: { ...doc, fps: clamp(action.fps, 1, 60) } }
     case 'setPenOnly':
       return { ...state, penOnly: action.value }
+    case 'setMode':
+      // Mode is locked once the document has any content.
+      if (!isDocEmpty(doc)) return state
+      return { ...state, doc: { ...doc, mode: action.mode } }
     default:
       return state
   }

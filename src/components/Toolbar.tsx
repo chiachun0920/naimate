@@ -1,4 +1,5 @@
 import type { Action, EditorState } from '../state/docReducer'
+import { isDocEmpty } from '../state/docReducer'
 
 interface Props {
   state: EditorState
@@ -10,7 +11,12 @@ const COLORS = ['#1a1a1a', '#e63946', '#1d7874', '#2a6fdb', '#f4a261', '#9b5de5'
 const SIZES = [4, 8, 16, 28]
 
 export function Toolbar({ state, dispatch, disabled }: Props) {
-  const { color, size, tool, penOnly } = state
+  const { color, size, tool, penOnly, doc } = state
+  const mode = doc.mode
+  const modeLocked = !isDocEmpty(doc)
+  const modeTitle = modeLocked
+    ? '已有內容，模式已鎖定；按「清空」後可重新選擇'
+    : '累進：筆畫逐幀累加；獨立：每幀獨立，完成時自動帶入上一幀'
   return (
     <div className="toolbar" aria-disabled={disabled}>
       <div className="group">
@@ -67,6 +73,26 @@ export function Toolbar({ state, dispatch, disabled }: Props) {
         >
           ✋ 防誤觸{penOnly ? '（開）' : '（關）'}
         </button>
+      </div>
+
+      <div className="group" title={modeTitle}>
+        <div className="seg" aria-disabled={modeLocked}>
+          <button
+            className={mode === 'additive' ? 'active' : ''}
+            disabled={modeLocked}
+            onClick={() => dispatch({ type: 'setMode', mode: 'additive' })}
+          >
+            累進
+          </button>
+          <button
+            className={mode === 'independent' ? 'active' : ''}
+            disabled={modeLocked}
+            onClick={() => dispatch({ type: 'setMode', mode: 'independent' })}
+          >
+            獨立
+          </button>
+        </div>
+        {modeLocked && <span className="lock" title={modeTitle}>🔒</span>}
       </div>
 
       <div className="group grow">

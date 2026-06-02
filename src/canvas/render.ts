@@ -1,4 +1,5 @@
 import type { Doc } from '../state/docReducer'
+import { isStrokeOnFrame } from '../state/docReducer'
 import { strokeToPath } from './strokePath'
 
 export interface RenderOpts {
@@ -31,7 +32,7 @@ export function renderFrame(
     ctx.fillRect(0, 0, width, height)
   }
   for (const s of doc.strokes) {
-    if (s.birthFrame > frameIndex) continue
+    if (!isStrokeOnFrame(s, frameIndex, doc.mode)) continue
     ctx.globalAlpha = dimOlder && s.birthFrame < frameIndex ? 0.22 : 1
     ctx.fillStyle = s.color
     ctx.fill(strokeToPath(s.points, s.size))

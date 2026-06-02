@@ -74,7 +74,7 @@ export default function App() {
         />
         {!isPlaying && (
           <div className="stage-badge">
-            編輯第 {currentFrame + 1} / {doc.frameCount} 幀
+            編輯第 {currentFrame + 1} / {doc.frameCount} 幀 · {doc.mode === 'independent' ? '獨立' : '累進'}
           </div>
         )}
       </div>

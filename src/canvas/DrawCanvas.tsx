@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Doc, Pt, Tool } from '../state/docReducer'
+import { isStrokeOnFrame } from '../state/docReducer'
 import { renderFrame } from './render'
 import { strokeToPath } from './strokePath'
 
@@ -237,7 +238,7 @@ export function DrawCanvas({
     setViewTransform(g, view)
     for (let i = doc.strokes.length - 1; i >= 0; i--) {
       const s = doc.strokes[i]
-      if (s.birthFrame > currentFrame) continue
+      if (!isStrokeOnFrame(s, currentFrame, doc.mode)) continue
       if (g.isPointInPath(strokeToPath(s.points, s.size), sx * dpr, sy * dpr)) {
         onErase(s.id)
         return
