@@ -1,7 +1,11 @@
 import type { Doc } from '../state/docReducer'
 import { DEFAULT_DOC } from '../state/docReducer'
+import type { Scene } from '../scene/sceneModel'
+import { makeId, OBJ_W, OBJ_H } from '../scene/sceneModel'
+import type { AnimEl, SceneElement } from '../scene/elements/types'
 
 const KEY = 'nanimate:doc'
+const SCENE_KEY = 'nanimate:scene'
 
 export function saveDoc(doc: Doc): void {
   try {
@@ -21,6 +25,58 @@ export function loadDoc(): Doc | null {
   } catch {
     return null
   }
+}
+
+export function saveScene(scene: Scene): void {
+  try {
+    localStorage.setItem(SCENE_KEY, JSON.stringify(scene))
+  } catch {
+    // storage full / unavailable — ignore for POC
+  }
+}
+
+/** Backfill any missing Doc fields (e.g. `images` added later) on old saves. */
+function normalizeElement(el: SceneElement): SceneElement {
+  if (el.type === 'animation') return { ...el, doc: { ...DEFAULT_DOC, ...el.doc } }
+  return el
+}
+
+export function loadScene(): Scene {
+  try {
+    const raw = localStorage.getItem(SCENE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && Array.isArray(parsed.elements)) {
+        return { elements: (parsed.elements as SceneElement[]).map(normalizeElement) }
+      }
+      // Migrate an earlier whiteboard that stored `objects` (animation-only).
+      if (parsed && Array.isArray(parsed.objects)) {
+        return {
+          elements: parsed.objects.map((o: object) =>
+            normalizeElement({ type: 'animation', ...o } as SceneElement),
+          ),
+        }
+      }
+    }
+    // Migrate a legacy single-document save into one element on a fresh whiteboard.
+    const legacy = loadDoc()
+    if (legacy) {
+      const anim: AnimEl = {
+        type: 'animation',
+        id: makeId(),
+        x: 80,
+        y: 80,
+        w: OBJ_W,
+        h: OBJ_H,
+        name: '動畫 1',
+        doc: legacy,
+      }
+      return { elements: [anim] }
+    }
+  } catch {
+    // fall through to empty scene
+  }
+  return { elements: [] }
 }
 
 export function exportJson(doc: Doc): void {

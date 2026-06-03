@@ -1,5 +1,6 @@
 import type { Doc } from '../state/docReducer'
-import { isStrokeOnFrame } from '../state/docReducer'
+import { isBirthOnFrame, isStrokeOnFrame } from '../state/docReducer'
+import { getImage } from '../lib/imageCache'
 import { strokeToPath } from './strokePath'
 
 export interface RenderOpts {
@@ -8,6 +9,8 @@ export interface RenderOpts {
   /** Fade strokes from earlier frames so the "new" strokes of this frame stand out. */
   dimOlder?: boolean
   background?: string
+  /** Use CORS-clean images (for export, so reading pixels never throws). */
+  cors?: boolean
 }
 
 /**
@@ -25,12 +28,22 @@ export function renderFrame(
   frameIndex: number,
   opts: RenderOpts,
 ): void {
-  const { width, height, dimOlder = false, background = '#ffffff' } = opts
+  const { width, height, dimOlder = false, background = '#ffffff', cors = false } = opts
   ctx.save()
   if (background) {
     ctx.fillStyle = background
     ctx.fillRect(0, 0, width, height)
   }
+  // Images render under the strokes so you can draw on top of them.
+  for (const im of doc.images ?? []) {
+    if (!isBirthOnFrame(im.birthFrame, frameIndex, doc.mode)) continue
+    const img = getImage(im.src, cors)
+    if (img) {
+      ctx.globalAlpha = dimOlder && im.birthFrame < frameIndex ? 0.22 : 1
+      ctx.drawImage(img, im.x, im.y, im.w, im.h)
+    }
+  }
+  ctx.globalAlpha = 1
   for (const s of doc.strokes) {
     if (!isStrokeOnFrame(s, frameIndex, doc.mode)) continue
     ctx.globalAlpha = dimOlder && s.birthFrame < frameIndex ? 0.22 : 1

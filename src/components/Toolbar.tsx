@@ -5,12 +5,13 @@ interface Props {
   state: EditorState
   dispatch: React.Dispatch<Action>
   disabled: boolean
+  onInsertImage: () => void
 }
 
 const COLORS = ['#1a1a1a', '#e63946', '#1d7874', '#2a6fdb', '#f4a261', '#9b5de5']
 const SIZES = [4, 8, 16, 28]
 
-export function Toolbar({ state, dispatch, disabled }: Props) {
+export function Toolbar({ state, dispatch, disabled, onInsertImage }: Props) {
   const { color, size, tool, penOnly, doc } = state
   const mode = doc.mode
   const modeLocked = !isDocEmpty(doc)
@@ -61,6 +62,16 @@ export function Toolbar({ state, dispatch, disabled }: Props) {
           onClick={() => dispatch({ type: 'setTool', tool: 'eraser' })}
         >
           🧽 橡皮擦
+        </button>
+        <button
+          className={tool === 'image' ? 'active' : ''}
+          title="選取/移動/縮放圖片"
+          onClick={() => dispatch({ type: 'setTool', tool: 'image' })}
+        >
+          🖼 圖片
+        </button>
+        <button onClick={onInsertImage} title="插入圖片（輸入網址）">
+          ＋ 圖片
         </button>
         <button onClick={() => dispatch({ type: 'undo' })}>↩︎ 復原</button>
       </div>

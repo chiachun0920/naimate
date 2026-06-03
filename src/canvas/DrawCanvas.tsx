@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Doc, Pt, Tool } from '../state/docReducer'
 import { isStrokeOnFrame } from '../state/docReducer'
+import { subscribeImageLoad } from '../lib/imageCache'
 import { renderFrame } from './render'
 import { strokeToPath } from './strokePath'
 
@@ -104,7 +105,7 @@ export function DrawCanvas({
   // cheaply instead of re-rendering every stroke.
   const blit = (g: CanvasRenderingContext2D, delta?: { s: number; ex: number; ey: number }) => {
     const bg = bgRef.current
-    if (!bg) return
+    if (!bg || bg.width === 0 || bg.height === 0) return
     g.save()
     g.setTransform(1, 0, 0, 1, 0, 0)
     g.clearRect(0, 0, bg.width, bg.height)
@@ -171,6 +172,9 @@ export function DrawCanvas({
   useEffect(() => {
     paintStatic()
   }, [paintStatic])
+
+  // Repaint once a referenced image finishes loading (async, not mid-draw).
+  useEffect(() => subscribeImageLoad(() => paintStatic()), [paintStatic])
 
   useEffect(
     () => () => {
@@ -261,6 +265,9 @@ export function DrawCanvas({
     } else if (e.pointerType === 'pen') {
       sawPen.current = true
     }
+    // Image tool: manipulation is handled by the DOM overlay above the canvas;
+    // the canvas only keeps two-finger pan/zoom (handled above) here.
+    if (tool === 'image') return
     const { x, y } = screenPos(ne)
     if (tool === 'eraser') {
       canvasRef.current?.setPointerCapture(e.pointerId)

@@ -17,6 +17,17 @@ export interface Stroke {
   size: number
 }
 
+/** A raster image (remote URL) placed on a frame; behaves like a stroke w.r.t. frames. */
+export interface AnimImage {
+  id: string
+  src: string
+  x: number
+  y: number
+  w: number
+  h: number
+  birthFrame: number
+}
+
 /**
  * Animation mode (locked per document once any content exists):
  * - 'additive':    frame N shows every stroke with birthFrame <= N (strokes
@@ -29,12 +40,13 @@ export type AnimMode = 'additive' | 'independent'
 
 export interface Doc {
   strokes: Stroke[]
+  images: AnimImage[]
   frameCount: number
   fps: number
   mode: AnimMode
 }
 
-export type Tool = 'pen' | 'eraser'
+export type Tool = 'pen' | 'eraser' | 'image'
 
 export interface EditorState {
   doc: Doc
@@ -49,6 +61,9 @@ export interface EditorState {
 export type Action =
   | { type: 'addStroke'; points: Pt[] }
   | { type: 'removeStroke'; id: string }
+  | { type: 'addImage'; id: string; src: string; x: number; y: number; w: number; h: number }
+  | { type: 'updateImage'; id: string; patch: Partial<Pick<AnimImage, 'x' | 'y' | 'w' | 'h'>> }
+  | { type: 'removeImage'; id: string }
   | { type: 'commitFrame' }
   | { type: 'selectFrame'; index: number }
   | { type: 'deleteFrame'; index: number }
@@ -62,7 +77,7 @@ export type Action =
   | { type: 'setPenOnly'; value: boolean }
   | { type: 'setMode'; mode: AnimMode }
 
-export const DEFAULT_DOC: Doc = { strokes: [], frameCount: 1, fps: 6, mode: 'additive' }
+export const DEFAULT_DOC: Doc = { strokes: [], images: [], frameCount: 1, fps: 6, mode: 'additive' }
 
 export const DEFAULT_STATE: EditorState = {
   doc: DEFAULT_DOC,
@@ -79,14 +94,19 @@ function makeId(): string {
   return `s${idCounter}_${idCounter * 2654435761 % 1000000}`
 }
 
+/** Whether content born on `birthFrame` is visible on `frameIndex` under the mode. */
+export function isBirthOnFrame(birthFrame: number, frameIndex: number, mode: AnimMode): boolean {
+  return mode === 'independent' ? birthFrame === frameIndex : birthFrame <= frameIndex
+}
+
 /** Whether a stroke is visible on frame `frameIndex` under the given mode. */
 export function isStrokeOnFrame(s: Stroke, frameIndex: number, mode: AnimMode): boolean {
-  return mode === 'independent' ? s.birthFrame === frameIndex : s.birthFrame <= frameIndex
+  return isBirthOnFrame(s.birthFrame, frameIndex, mode)
 }
 
 /** The document has no content yet, so the animation mode is still selectable. */
 export function isDocEmpty(doc: Doc): boolean {
-  return doc.strokes.length === 0 && doc.frameCount === 1
+  return doc.strokes.length === 0 && (doc.images?.length ?? 0) === 0 && doc.frameCount === 1
 }
 
 export function reducer(state: EditorState, action: Action): EditorState {
@@ -107,36 +127,75 @@ export function reducer(state: EditorState, action: Action): EditorState {
         ...state,
         doc: { ...doc, strokes: doc.strokes.filter((s) => s.id !== action.id) },
       }
+    case 'addImage': {
+      const image: AnimImage = {
+        id: action.id,
+        src: action.src,
+        x: action.x,
+        y: action.y,
+        w: action.w,
+        h: action.h,
+        birthFrame: state.currentFrame,
+      }
+      return { ...state, doc: { ...doc, images: [...doc.images, image] } }
+    }
+    case 'updateImage':
+      return {
+        ...state,
+        doc: {
+          ...doc,
+          images: doc.images.map((im) => (im.id === action.id ? { ...im, ...action.patch } : im)),
+        },
+      }
+    case 'removeImage':
+      return {
+        ...state,
+        doc: { ...doc, images: doc.images.filter((im) => im.id !== action.id) },
+      }
     case 'commitFrame': {
       const newIndex = doc.frameCount
       const newCount = doc.frameCount + 1
       // Independent mode: seed the new frame with an editable copy of the frame
       // we're finishing, so each cel starts from the previous one.
-      const copied =
+      const copiedStrokes =
         doc.mode === 'independent'
           ? doc.strokes
               .filter((s) => s.birthFrame === state.currentFrame)
               .map((s) => ({ ...s, id: makeId(), birthFrame: newIndex }))
           : []
+      const copiedImages =
+        doc.mode === 'independent'
+          ? doc.images
+              .filter((im) => im.birthFrame === state.currentFrame)
+              .map((im) => ({ ...im, id: makeId(), birthFrame: newIndex }))
+          : []
       return {
         ...state,
-        doc: { ...doc, frameCount: newCount, strokes: [...doc.strokes, ...copied] },
+        doc: {
+          ...doc,
+          frameCount: newCount,
+          strokes: [...doc.strokes, ...copiedStrokes],
+          images: [...doc.images, ...copiedImages],
+        },
         currentFrame: newIndex,
       }
     }
     case 'selectFrame':
       return { ...state, currentFrame: clamp(action.index, 0, doc.frameCount - 1) }
     case 'deleteFrame': {
-      if (doc.frameCount <= 1) return { ...state, doc: { ...doc, strokes: [] } }
+      if (doc.frameCount <= 1) return { ...state, doc: { ...doc, strokes: [], images: [] } }
       const i = action.index
-      // Drop strokes born on this frame, shift later births down by one.
+      // Drop content born on this frame, shift later births down by one.
       const strokes = doc.strokes
         .filter((s) => s.birthFrame !== i)
         .map((s) => (s.birthFrame > i ? { ...s, birthFrame: s.birthFrame - 1 } : s))
+      const images = doc.images
+        .filter((im) => im.birthFrame !== i)
+        .map((im) => (im.birthFrame > i ? { ...im, birthFrame: im.birthFrame - 1 } : im))
       const frameCount = doc.frameCount - 1
       return {
         ...state,
-        doc: { ...doc, strokes, frameCount },
+        doc: { ...doc, strokes, images, frameCount },
         currentFrame: clamp(state.currentFrame > i ? state.currentFrame - 1 : state.currentFrame, 0, frameCount - 1),
       }
     }
