@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Doc, Pt, Tool } from '../state/docReducer'
-import { isStrokeOnFrame } from '../state/docReducer'
-import { subscribeImageLoad } from '../lib/imageCache'
+import { isBirthOnFrame, isStrokeOnFrame } from '../state/docReducer'
+import { subscribeImageLoad, getImage } from '../lib/imageCache'
+import { pointInPolygon } from '../scene/elements/geometry'
+import { imageBounds, pointInRect, strokeBounds, unionRect } from '../editor/lassoGeom'
 import { renderFrame } from './render'
 import { strokeToPath } from './strokePath'
+
+export interface LassoSelection {
+  strokeIds: string[]
+  imageIds: string[]
+}
 
 /** Viewport transform: screen = world * scale + t. */
 export interface View {
@@ -36,6 +43,14 @@ interface Props {
   onDrawingChange?: (active: boolean) => void
   /** Commit a new viewport (after a pinch/pan gesture or wheel zoom). */
   onViewChange: (view: View) => void
+  /** Lasso tool: current selection (so the canvas can group-move it). */
+  selection?: LassoSelection
+  /** Lasso completed: report which strokes/images were enclosed. */
+  onLassoSelect?: (sel: LassoSelection) => void
+  /** Group move of the selection committed (world delta). */
+  onSelectionMove?: (dx: number, dy: number) => void
+  /** Tap on empty space while lasso tool → clear the selection. */
+  onClearSelection?: () => void
 }
 
 export function DrawCanvas({
@@ -53,6 +68,10 @@ export function DrawCanvas({
   onErase,
   onDrawingChange,
   onViewChange,
+  selection,
+  onLassoSelect,
+  onSelectionMove,
+  onClearSelection,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Cached "static" layer: committed strokes of the shown frame, rendered once
@@ -68,6 +87,9 @@ export function DrawCanvas({
   const gesture = useRef<
     null | { scale0: number; tx0: number; ty0: number; cx: number; cy: number; d0: number; live: View }
   >(null)
+  // Lasso tool: in-progress polygon (world coords) / group-move delta.
+  const lasso = useRef<number[][] | null>(null)
+  const selMove = useRef<{ sx: number; sy: number; dx: number; dy: number } | null>(null)
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
   const interactive = displayFrame === null
 
@@ -121,14 +143,72 @@ export function DrawCanvas({
     blit(g)
   }, [renderBackground])
 
+  // Render the current frame into the bg cache, but excluding the lasso
+  // selection — used during a group move so the originals aren't shown.
+  const renderBgExceptSelection = (sel: LassoSelection) => {
+    const bg = bgRef.current
+    if (!bg || bg.width === 0 || bg.height === 0) return
+    const g = bg.getContext('2d')
+    if (!g) return
+    const sset = new Set(sel.strokeIds)
+    const iset = new Set(sel.imageIds)
+    const filtered: Doc = {
+      ...doc,
+      strokes: doc.strokes.filter((s) => !sset.has(s.id)),
+      images: (doc.images ?? []).filter((im) => !iset.has(im.id)),
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    g.clearRect(0, 0, bg.width, bg.height)
+    setViewTransform(g, view)
+    renderFrame(g, filtered, currentFrame, { width, height, dimOlder: true })
+  }
+
   // Live repaint during a stroke: blit the unchanged cache + only the current
   // stroke (world coords, under the view transform).
   const paintLive = () => {
     const g = ctxRef.current
     if (!g) return
     blit(g)
-    if (points.current.length === 0) return
     setViewTransform(g, view)
+    // Lasso polygon being drawn.
+    if (lasso.current && lasso.current.length > 1) {
+      const poly = lasso.current
+      g.save()
+      g.lineJoin = 'round'
+      g.lineWidth = 1.5 / view.scale
+      g.setLineDash([6 / view.scale, 4 / view.scale])
+      g.strokeStyle = '#2a6fdb'
+      g.fillStyle = 'rgba(42, 111, 219, 0.08)'
+      g.beginPath()
+      g.moveTo(poly[0][0], poly[0][1])
+      for (let i = 1; i < poly.length; i++) g.lineTo(poly[i][0], poly[i][1])
+      g.closePath()
+      g.fill()
+      g.stroke()
+      g.restore()
+      return
+    }
+    // Group move of the lasso selection (bg already excludes it).
+    if (selMove.current && selection) {
+      const { dx, dy } = selMove.current
+      const sset = new Set(selection.strokeIds)
+      const iset = new Set(selection.imageIds)
+      g.save()
+      g.translate(dx, dy)
+      for (const s of doc.strokes) {
+        if (!sset.has(s.id)) continue
+        g.fillStyle = s.color
+        g.fill(strokeToPath(s.points, s.size))
+      }
+      g.restore()
+      for (const im of doc.images ?? []) {
+        if (!iset.has(im.id)) continue
+        const img = getImage(im.src)
+        if (img) g.drawImage(img, im.x + dx, im.y + dy, im.w, im.h)
+      }
+      return
+    }
+    if (points.current.length === 0) return
     g.fillStyle = color
     g.fill(strokeToPath(points.current, size, false))
   }
@@ -250,6 +330,44 @@ export function DrawCanvas({
     }
   }
 
+  // --- Lasso (animation editor) ----------------------------------------------
+
+  const selectionRect = (sel: LassoSelection) => {
+    const sset = new Set(sel.strokeIds)
+    const iset = new Set(sel.imageIds)
+    const rects = []
+    for (const s of doc.strokes) if (sset.has(s.id)) rects.push(strokeBounds(s))
+    for (const im of doc.images ?? []) if (iset.has(im.id)) rects.push(imageBounds(im))
+    return unionRect(rects)
+  }
+
+  const computeLassoSelection = (poly: number[][]): LassoSelection => {
+    const strokeIds: string[] = []
+    const imageIds: string[] = []
+    for (const s of doc.strokes) {
+      if (!isStrokeOnFrame(s, currentFrame, doc.mode)) continue
+      let hit = s.points.some(([x, y]) => pointInPolygon(x, y, poly))
+      if (!hit) {
+        const b = strokeBounds(s)
+        hit = pointInPolygon(b.x + b.w / 2, b.y + b.h / 2, poly)
+      }
+      if (hit) strokeIds.push(s.id)
+    }
+    for (const im of doc.images ?? []) {
+      if (!isBirthOnFrame(im.birthFrame, currentFrame, doc.mode)) continue
+      const b = imageBounds(im)
+      const pts: [number, number][] = [
+        [b.x + b.w / 2, b.y + b.h / 2],
+        [b.x, b.y],
+        [b.x + b.w, b.y],
+        [b.x, b.y + b.h],
+        [b.x + b.w, b.y + b.h],
+      ]
+      if (pts.some(([x, y]) => pointInPolygon(x, y, poly))) imageIds.push(im.id)
+    }
+    return { strokeIds, imageIds }
+  }
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!interactive) return
     const ne = e.nativeEvent
@@ -264,6 +382,23 @@ export function DrawCanvas({
       // else: finger-drawing allowed, fall through
     } else if (e.pointerType === 'pen') {
       sawPen.current = true
+    }
+    // Lasso tool: drag inside an existing selection → group move; else draw a
+    // polygon. (finger pan/pinch already handled above.)
+    if (tool === 'lasso') {
+      canvasRef.current?.setPointerCapture(e.pointerId)
+      const [wx, wy] = toWorldPt(ne)
+      const sel = selection
+      const hasSel = !!sel && (sel.strokeIds.length > 0 || sel.imageIds.length > 0)
+      if (hasSel && pointInRect(wx, wy, selectionRect(sel!))) {
+        selMove.current = { sx: wx, sy: wy, dx: 0, dy: 0 }
+        renderBgExceptSelection(sel!)
+        paintLive()
+      } else {
+        lasso.current = [[wx, wy]]
+        paintLive()
+      }
+      return
     }
     // Image tool: manipulation is handled by the DOM overlay above the canvas;
     // the canvas only keeps two-finger pan/zoom (handled above) here.
@@ -289,6 +424,22 @@ export function DrawCanvas({
       updateGesture()
       return
     }
+    if (lasso.current) {
+      const coalesced = typeof ne.getCoalescedEvents === 'function' ? ne.getCoalescedEvents() : [ne]
+      for (const ev of coalesced.length ? coalesced : [ne]) {
+        const [wx, wy] = toWorldPt(ev)
+        lasso.current.push([wx, wy])
+      }
+      schedule(paintLive)
+      return
+    }
+    if (selMove.current) {
+      const [wx, wy] = toWorldPt(ne)
+      selMove.current.dx = wx - selMove.current.sx
+      selMove.current.dy = wy - selMove.current.sy
+      schedule(paintLive)
+      return
+    }
     if (!drawing.current) return
     if (e.pointerType === 'touch' && (penOnly || sawPen.current)) return
     const coalesced =
@@ -299,6 +450,41 @@ export function DrawCanvas({
 
   const finishStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.pointerType === 'touch') endTouch(e.pointerId)
+    if (lasso.current) {
+      const poly = lasso.current
+      lasso.current = null
+      if (rafId.current != null) {
+        cancelAnimationFrame(rafId.current)
+        rafId.current = null
+      }
+      // A near-zero polygon = a tap on empty space → clear the selection.
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const [x, y] of poly) {
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
+      }
+      const tap = poly.length < 3 || (maxX - minX) * view.scale < 6 || (maxY - minY) * view.scale < 6
+      if (tap) onClearSelection?.()
+      else onLassoSelect?.(computeLassoSelection(poly))
+      paintStatic()
+      return
+    }
+    if (selMove.current) {
+      const { dx, dy } = selMove.current
+      selMove.current = null
+      if (rafId.current != null) {
+        cancelAnimationFrame(rafId.current)
+        rafId.current = null
+      }
+      if (dx !== 0 || dy !== 0) onSelectionMove?.(dx, dy)
+      paintStatic()
+      return
+    }
     if (!interactive || !drawing.current) return
     if (e.pointerType === 'touch' && (penOnly || sawPen.current)) return
     drawing.current = false

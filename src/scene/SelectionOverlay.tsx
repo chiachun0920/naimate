@@ -1,12 +1,12 @@
 import { useRef } from 'react'
-import { bounds, normBox, scaleTo, type Box } from './elements/geometry'
+import { bounds, normBox, scaleTo, unionBounds, type Box } from './elements/geometry'
 import type { SceneElement } from './elements/types'
-import { screenBox, type View } from './WhiteboardCanvas'
+import type { View } from './WhiteboardCanvas'
 
 type Handle = 'nw' | 'ne' | 'sw' | 'se'
 
 interface Props {
-  el: SceneElement
+  els: SceneElement[]
   view: View
   onUpdate: (el: SceneElement) => void
   onDelete: () => void
@@ -15,16 +15,24 @@ interface Props {
 
 const MIN = 10 // min size in world units
 
-export function SelectionOverlay({ el, view, onUpdate, onDelete, onOpenAnim }: Props) {
-  const sb = screenBox(el, view)
+export function SelectionOverlay({ els, view, onUpdate, onDelete, onOpenAnim }: Props) {
+  const single = els.length === 1 ? els[0] : null
+  const box = single ? bounds(single) : unionBounds(els)
+  const sb = {
+    left: box.x * view.scale + view.tx,
+    top: box.y * view.scale + view.ty,
+    width: box.w * view.scale,
+    height: box.h * view.scale,
+  }
   const drag = useRef<{ handle: Handle; sx: number; sy: number; el0: SceneElement; box0: Box } | null>(
     null,
   )
 
   const onHandleDown = (e: React.PointerEvent, handle: Handle) => {
+    if (!single) return
     e.stopPropagation()
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-    drag.current = { handle, sx: e.clientX, sy: e.clientY, el0: el, box0: bounds(el) }
+    drag.current = { handle, sx: e.clientX, sy: e.clientY, el0: single, box0: bounds(single) }
   }
 
   const onHandleMove = (e: React.PointerEvent) => {
@@ -33,7 +41,7 @@ export function SelectionOverlay({ el, view, onUpdate, onDelete, onOpenAnim }: P
     let dwx = (e.clientX - d.sx) / view.scale
     let dwy = (e.clientY - d.sy) / view.scale
     // Images keep their aspect ratio: drive both axes from the dominant drag.
-    if (el.type === 'image' && d.box0.w && d.box0.h) {
+    if (d.el0.type === 'image' && d.box0.w && d.box0.h) {
       const ratio = d.box0.w / d.box0.h
       if (Math.abs(dwx) > Math.abs(dwy) * ratio) dwy = dwx / ratio
       else dwx = dwy * ratio
@@ -79,8 +87,8 @@ export function SelectionOverlay({ el, view, onUpdate, onDelete, onOpenAnim }: P
   return (
     <div className="sel-box" style={{ left: sb.left, top: sb.top, width: sb.width, height: sb.height }}>
       <div className="sel-actions">
-        {el.type === 'animation' && (
-          <button onClick={() => onOpenAnim(el.id)} title="編輯動畫">
+        {single?.type === 'animation' && (
+          <button onClick={() => onOpenAnim(single.id)} title="編輯動畫">
             編輯
           </button>
         )}
@@ -88,17 +96,18 @@ export function SelectionOverlay({ el, view, onUpdate, onDelete, onOpenAnim }: P
           🗑
         </button>
       </div>
-      {handles.map((h) => (
-        <div
-          key={h}
-          className="sel-handle"
-          style={hpos(h)}
-          onPointerDown={(e) => onHandleDown(e, h)}
-          onPointerMove={onHandleMove}
-          onPointerUp={onHandleUp}
-          onPointerCancel={onHandleUp}
-        />
-      ))}
+      {single &&
+        handles.map((h) => (
+          <div
+            key={h}
+            className="sel-handle"
+            style={hpos(h)}
+            onPointerDown={(e) => onHandleDown(e, h)}
+            onPointerMove={onHandleMove}
+            onPointerUp={onHandleUp}
+            onPointerCancel={onHandleUp}
+          />
+        ))}
     </div>
   )
 }

@@ -20,6 +20,7 @@ interface Props {
 
 const TOOLS: { id: Tool; label: string; title: string }[] = [
   { id: 'select', label: '⤢', title: '選取' },
+  { id: 'lasso', label: '⬚', title: '套索（圈選多個）' },
   { id: 'pen', label: '✏️', title: '筆' },
   { id: 'rect', label: '▭', title: '矩形' },
   { id: 'ellipse', label: '◯', title: '橢圓' },

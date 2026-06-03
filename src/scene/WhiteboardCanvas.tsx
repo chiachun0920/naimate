@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { clampScale } from '../canvas/DrawCanvas'
 import { drawSceneElement } from './elements/draw'
 import { subscribeImageLoad } from './elements/imageCache'
-import { bounds, hitTest, normBox, translate } from './elements/geometry'
+import { boxInPolygon, bounds, hitTest, normBox, translate } from './elements/geometry'
 import type { BoxEl, DrawnElement, SceneElement, Style } from './elements/types'
 import { makeId } from './sceneModel'
 
@@ -12,7 +12,7 @@ export interface View {
   ty: number
 }
 
-export type Tool = 'select' | 'pen' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text'
+export type Tool = 'select' | 'lasso' | 'pen' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text'
 
 interface Props {
   elements: SceneElement[]
@@ -21,10 +21,12 @@ interface Props {
   style: Style
   width: number
   height: number
+  selectedIds: string[]
   onViewChange: (v: View) => void
   onAddElement: (el: SceneElement) => void
-  onUpdateElement: (el: SceneElement) => void
+  onUpdateElements: (els: SceneElement[]) => void
   onSelect: (id: string | null) => void
+  onSelectMany: (ids: string[]) => void
   onOpenAnim: (id: string) => void
   onStartText: (worldX: number, worldY: number) => void
 }
@@ -36,10 +38,12 @@ export function WhiteboardCanvas({
   style,
   width,
   height,
+  selectedIds,
   onViewChange,
   onAddElement,
-  onUpdateElement,
+  onUpdateElements,
   onSelect,
+  onSelectMany,
   onOpenAnim,
   onStartText,
 }: Props) {
@@ -53,6 +57,8 @@ export function WhiteboardCanvas({
   viewRef.current = view
   const elementsRef = useRef(elements)
   elementsRef.current = elements
+  const selectedIdsRef = useRef(selectedIds)
+  selectedIdsRef.current = selectedIds
 
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const gesture = useRef<
@@ -61,7 +67,12 @@ export function WhiteboardCanvas({
     | { kind: 'pinch'; scale0: number; tx0: number; ty0: number; cx: number; cy: number; d0: number }
   >(null)
   const draft = useRef<DrawnElement | null>(null)
-  const move = useRef<{ id: string; sx: number; sy: number; el0: SceneElement; live: SceneElement } | null>(null)
+  const move = useRef<
+    | null
+    | { sx: number; sy: number; els0: SceneElement[]; live: SceneElement[] }
+  >(null)
+  // Lasso polygon (world coords) while the lasso tool is dragging.
+  const lasso = useRef<number[][] | null>(null)
   const lastTap = useRef<{ t: number; id: string | null }>({ t: 0, id: null })
 
   const rel = (e: { clientX: number; clientY: number }) => {
@@ -82,7 +93,7 @@ export function WhiteboardCanvas({
   )
 
   const renderBg = useCallback(
-    (exceptId?: string) => {
+    (exceptIds?: Set<string>) => {
       const bg = bgRef.current
       if (!bg || bg.width === 0 || bg.height === 0) return
       const g = bg.getContext('2d')
@@ -92,7 +103,7 @@ export function WhiteboardCanvas({
       setViewTransform(g)
       for (const el of elementsRef.current) {
         if (el.type === 'animation') continue // drawn as a DOM card
-        if (el.id === exceptId) continue
+        if (exceptIds?.has(el.id)) continue
         drawSceneElement(g, el as DrawnElement)
       }
     },
@@ -118,10 +129,27 @@ export function WhiteboardCanvas({
     if (!g) return
     blit()
     setViewTransform(g)
-    if (draft.current) drawSceneElement(g, draft.current)
-    else if (move.current) {
-      const el = move.current.live
-      if (el.type !== 'animation') drawSceneElement(g, el as DrawnElement)
+    if (draft.current) {
+      drawSceneElement(g, draft.current)
+    } else if (move.current) {
+      for (const el of move.current.live) {
+        if (el.type !== 'animation') drawSceneElement(g, el as DrawnElement)
+      }
+    } else if (lasso.current && lasso.current.length > 1) {
+      const poly = lasso.current
+      g.save()
+      g.lineJoin = 'round'
+      g.lineWidth = 1.5 / viewRef.current.scale
+      g.setLineDash([6 / viewRef.current.scale, 4 / viewRef.current.scale])
+      g.strokeStyle = '#2a6fdb'
+      g.fillStyle = 'rgba(42, 111, 219, 0.08)'
+      g.beginPath()
+      g.moveTo(poly[0][0], poly[0][1])
+      for (let i = 1; i < poly.length; i++) g.lineTo(poly[i][0], poly[i][1])
+      g.closePath()
+      g.fill()
+      g.stroke()
+      g.restore()
     }
   }
 
@@ -217,7 +245,6 @@ export function WhiteboardCanvas({
     if (tool === 'select') {
       const hit = hitTopmost(w.x, w.y)
       if (hit) {
-        onSelect(hit.id)
         // double-tap on an animation opens it
         const now = Date.now()
         if (hit.type === 'animation' && lastTap.current.id === hit.id && now - lastTap.current.t < 320) {
@@ -226,13 +253,33 @@ export function WhiteboardCanvas({
           return
         }
         lastTap.current = { t: now, id: hit.id }
-        move.current = { id: hit.id, sx: p.x, sy: p.y, el0: hit, live: hit }
-        renderBg(hit.id)
+        // Dragging an already-multi-selected element moves the whole group;
+        // otherwise collapse to a single selection and move just that one.
+        const sel = selectedIdsRef.current
+        const groupMove = sel.length > 1 && sel.includes(hit.id)
+        const ids = groupMove ? sel : [hit.id]
+        if (!groupMove) onSelect(hit.id)
+        const els0 = elementsRef.current.filter((el) => ids.includes(el.id))
+        move.current = { sx: p.x, sy: p.y, els0, live: els0 }
+        renderBg(new Set(ids))
       } else {
         onSelect(null)
         const v = viewRef.current
         gesture.current = { kind: 'pan', sx: p.x, sy: p.y, tx0: v.tx, ty0: v.ty }
       }
+      return
+    }
+
+    if (tool === 'lasso') {
+      // finger pans / pinches; pen/mouse draws the lasso polygon
+      if (isTouch) {
+        const v = viewRef.current
+        gesture.current = { kind: 'pan', sx: p.x, sy: p.y, tx0: v.tx, ty0: v.ty }
+        return
+      }
+      lasso.current = [[w.x, w.y]]
+      renderBg()
+      paintLive()
       return
     }
 
@@ -273,6 +320,17 @@ export function WhiteboardCanvas({
       onViewChange({ scale: viewRef.current.scale, tx: g.tx0 + (p.x - g.sx), ty: g.ty0 + (p.y - g.sy) })
       return
     }
+    if (lasso.current) {
+      const ne = e.nativeEvent
+      const evs = typeof ne.getCoalescedEvents === 'function' ? ne.getCoalescedEvents() : [ne]
+      for (const ev of evs.length ? evs : [ne]) {
+        const r = rel(ev)
+        const q = toWorld(r.x, r.y)
+        lasso.current.push([q.x, q.y])
+      }
+      schedule(paintLive)
+      return
+    }
     if (draft.current) {
       const w = toWorld(p.x, p.y)
       const d = draft.current
@@ -305,7 +363,7 @@ export function WhiteboardCanvas({
       const m = move.current
       const dwx = (p.x - m.sx) / viewRef.current.scale
       const dwy = (p.y - m.sy) / viewRef.current.scale
-      m.live = translate(m.el0, dwx, dwy)
+      m.live = m.els0.map((el) => translate(el, dwx, dwy))
       schedule(paintLive)
     }
   }
@@ -319,6 +377,17 @@ export function WhiteboardCanvas({
     if (gesture.current) {
       if (gesture.current.kind === 'pinch' && pointers.current.size >= 2) return
       gesture.current = null
+      return
+    }
+    if (lasso.current) {
+      const poly = lasso.current
+      lasso.current = null
+      const ids =
+        poly.length >= 3
+          ? elementsRef.current.filter((el) => boxInPolygon(bounds(el), poly)).map((el) => el.id)
+          : []
+      onSelectMany(ids)
+      paintStatic()
       return
     }
     if (draft.current) {
@@ -340,8 +409,7 @@ export function WhiteboardCanvas({
     if (move.current) {
       const live = move.current.live
       move.current = null
-      // Only commit if it actually moved.
-      onUpdateElement(live)
+      onUpdateElements(live)
     }
   }
 

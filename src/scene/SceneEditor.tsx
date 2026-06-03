@@ -18,15 +18,18 @@ import {
 import type { SceneElement, Style, TextEl } from './elements/types'
 
 export function SceneEditor() {
-  const { scene, addElement, replaceElement, removeElement, updateAnimDoc } = useScene()
+  const { scene, addElement, replaceElement, replaceElements, removeElements, updateAnimDoc } =
+    useScene()
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 })
   const [tool, setTool] = useState<Tool>('select')
   const [style, setStyle] = useState<Style>(DEFAULT_STYLE)
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [openId, setOpenId] = useState<string | null>(null)
+  const selectOne = (id: string | null) => setSelectedIds(id ? [id] : [])
   const [editingText, setEditingText] = useState<{ x: number; y: number; value: string } | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null) // null = dialog closed
+  const [chromeHidden, setChromeHidden] = useState(false)
 
   const viewportRef = useRef<HTMLDivElement>(null)
   const [stage, setStage] = useState({ width: window.innerWidth, height: window.innerHeight })
@@ -48,7 +51,7 @@ export function SceneEditor() {
     return () => ro.disconnect()
   }, [openId])
 
-  const selected = scene.elements.find((e) => e.id === selectedId) ?? null
+  const selectedEls = scene.elements.filter((e) => selectedIds.includes(e.id))
   const animElements = scene.elements.filter((e) => e.type === 'animation')
   const openEl = openId ? scene.elements.find((e) => e.id === openId) : null
 
@@ -69,16 +72,18 @@ export function SceneEditor() {
 
   const applyStyle = (patch: Partial<Style>) => {
     setStyle((s) => ({ ...s, ...patch }))
-    if (selected && selected.type !== 'animation') replaceElement({ ...selected, ...patch })
+    const targets = selectedEls.filter((e) => e.type !== 'animation')
+    if (targets.length) replaceElements(targets.map((e) => ({ ...e, ...patch }) as SceneElement))
   }
   const applyFontSize = (n: number) => {
     setFontSize(n)
-    if (selected && selected.type === 'text') replaceElement({ ...selected, fontSize: n })
+    const targets = selectedEls.filter((e) => e.type === 'text')
+    if (targets.length) replaceElements(targets.map((e) => ({ ...e, fontSize: n }) as SceneElement))
   }
   const deleteSelected = () => {
-    if (!selectedId) return
-    removeElement(selectedId)
-    setSelectedId(null)
+    if (selectedIds.length === 0) return
+    removeElements(selectedIds)
+    setSelectedIds([])
   }
 
   const zoomBy = (f: number) => {
@@ -96,7 +101,7 @@ export function SceneEditor() {
     const wy = (cy - view.ty) / view.scale - OBJ_H / 2
     const el = newAnimationElement(wx, wy, animElements.length + 1)
     addElement(el)
-    setSelectedId(el.id)
+    setSelectedIds([el.id])
     setTool('select')
   }
 
@@ -112,7 +117,7 @@ export function SceneEditor() {
     img.onload = () => {
       const el = newImageElement(url, img.naturalWidth, img.naturalHeight, wx, wy)
       addElement(el)
-      setSelectedId(el.id)
+      setSelectedIds([el.id])
       setTool('select')
     }
     img.onerror = () => alert('圖片載入失敗，請確認網址是公開可存取的圖片')
@@ -135,7 +140,7 @@ export function SceneEditor() {
         fontSize,
       }
       addElement(el)
-      setSelectedId(el.id)
+      setSelectedIds([el.id])
     }
     setEditingText(null)
     setTool('select')
@@ -151,13 +156,15 @@ export function SceneEditor() {
           style={style}
           width={stage.width}
           height={stage.height}
+          selectedIds={selectedIds}
           onViewChange={setView}
           onAddElement={(el: SceneElement) => {
             addElement(el)
-            setSelectedId(el.id)
+            setSelectedIds([el.id])
           }}
-          onUpdateElement={replaceElement}
-          onSelect={setSelectedId}
+          onUpdateElements={replaceElements}
+          onSelect={selectOne}
+          onSelectMany={setSelectedIds}
           onOpenAnim={setOpenId}
           onStartText={(x, y) => setEditingText({ x, y, value: '' })}
         />
@@ -171,9 +178,9 @@ export function SceneEditor() {
           ))}
         </div>
 
-        {selected && (
+        {selectedEls.length > 0 && (
           <SelectionOverlay
-            el={selected}
+            els={selectedEls}
             view={view}
             onUpdate={replaceElement}
             onDelete={deleteSelected}
@@ -210,22 +217,32 @@ export function SceneEditor() {
         )}
       </div>
 
-      <SceneToolbar
-        tool={tool}
-        onTool={setTool}
-        style={style}
-        fontSize={fontSize}
-        onStyle={applyStyle}
-        onFontSize={applyFontSize}
-        scale={view.scale}
-        onZoomIn={() => zoomBy(1.25)}
-        onZoomOut={() => zoomBy(1 / 1.25)}
-        onZoomReset={() => setView({ scale: 1, tx: 0, ty: 0 })}
-        hasSelection={!!selected}
-        onDelete={deleteSelected}
-        onInsertAnim={insertAnim}
-        onInsertImage={() => setImageUrl('')}
-      />
+      {!chromeHidden && (
+        <SceneToolbar
+          tool={tool}
+          onTool={setTool}
+          style={style}
+          fontSize={fontSize}
+          onStyle={applyStyle}
+          onFontSize={applyFontSize}
+          scale={view.scale}
+          onZoomIn={() => zoomBy(1.25)}
+          onZoomOut={() => zoomBy(1 / 1.25)}
+          onZoomReset={() => setView({ scale: 1, tx: 0, ty: 0 })}
+          hasSelection={selectedEls.length > 0}
+          onDelete={deleteSelected}
+          onInsertAnim={insertAnim}
+          onInsertImage={() => setImageUrl('')}
+        />
+      )}
+
+      <button
+        className="chrome-fab"
+        title={chromeHidden ? '顯示工具列' : '純畫布（隱藏工具）'}
+        onClick={() => setChromeHidden((h) => !h)}
+      >
+        {chromeHidden ? '🧰' : '⛶'}
+      </button>
 
       {imageUrl !== null && (
         <div className="url-dialog">

@@ -70,6 +70,13 @@ export function Toolbar({ state, dispatch, disabled, onInsertImage }: Props) {
         >
           🖼 圖片
         </button>
+        <button
+          className={tool === 'lasso' ? 'active' : ''}
+          title="套索（圈選筆畫/圖片）"
+          onClick={() => dispatch({ type: 'setTool', tool: 'lasso' })}
+        >
+          ⬚ 套索
+        </button>
         <button onClick={onInsertImage} title="插入圖片（輸入網址）">
           ＋ 圖片
         </button>

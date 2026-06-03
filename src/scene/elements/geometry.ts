@@ -25,6 +25,47 @@ export function normBox(x: number, y: number, w: number, h: number): Box {
   return { x: w < 0 ? x + w : x, y: h < 0 ? y + h : y, w: Math.abs(w), h: Math.abs(h) }
 }
 
+/** Combined bounding box of several elements (empty → zero box). */
+export function unionBounds(els: SceneElement[]): Box {
+  if (els.length === 0) return { x: 0, y: 0, w: 0, h: 0 }
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const el of els) {
+    const b = bounds(el)
+    if (b.x < minX) minX = b.x
+    if (b.y < minY) minY = b.y
+    if (b.x + b.w > maxX) maxX = b.x + b.w
+    if (b.y + b.h > maxY) maxY = b.y + b.h
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+}
+
+/** Ray-cast point-in-polygon test. `poly` is a list of [x, y] world points. */
+export function pointInPolygon(px: number, py: number, poly: number[][]): boolean {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i]
+    const [xj, yj] = poly[j]
+    const intersect = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+/** True if any of the box's center/corners falls inside the polygon. */
+export function boxInPolygon(b: Box, poly: number[][]): boolean {
+  const pts: [number, number][] = [
+    [b.x + b.w / 2, b.y + b.h / 2],
+    [b.x, b.y],
+    [b.x + b.w, b.y],
+    [b.x, b.y + b.h],
+    [b.x + b.w, b.y + b.h],
+  ]
+  return pts.some(([x, y]) => pointInPolygon(x, y, poly))
+}
+
 export function bounds(el: SceneElement): Box {
   switch (el.type) {
     case 'freedraw': {

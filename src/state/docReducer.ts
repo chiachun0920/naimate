@@ -46,7 +46,7 @@ export interface Doc {
   mode: AnimMode
 }
 
-export type Tool = 'pen' | 'eraser' | 'image'
+export type Tool = 'pen' | 'eraser' | 'image' | 'lasso'
 
 export interface EditorState {
   doc: Doc
@@ -64,6 +64,10 @@ export type Action =
   | { type: 'addImage'; id: string; src: string; x: number; y: number; w: number; h: number }
   | { type: 'updateImage'; id: string; patch: Partial<Pick<AnimImage, 'x' | 'y' | 'w' | 'h'>> }
   | { type: 'removeImage'; id: string }
+  | { type: 'translateStrokes'; ids: string[]; dx: number; dy: number }
+  | { type: 'translateImages'; ids: string[]; dx: number; dy: number }
+  | { type: 'removeStrokes'; ids: string[] }
+  | { type: 'removeImages'; ids: string[] }
   | { type: 'commitFrame' }
   | { type: 'selectFrame'; index: number }
   | { type: 'deleteFrame'; index: number }
@@ -152,6 +156,42 @@ export function reducer(state: EditorState, action: Action): EditorState {
         ...state,
         doc: { ...doc, images: doc.images.filter((im) => im.id !== action.id) },
       }
+    case 'translateStrokes': {
+      const ids = new Set(action.ids)
+      const { dx, dy } = action
+      return {
+        ...state,
+        doc: {
+          ...doc,
+          strokes: doc.strokes.map((s) =>
+            ids.has(s.id)
+              ? { ...s, points: s.points.map(([x, y, p]) => [x + dx, y + dy, p] as Pt) }
+              : s,
+          ),
+        },
+      }
+    }
+    case 'translateImages': {
+      const ids = new Set(action.ids)
+      const { dx, dy } = action
+      return {
+        ...state,
+        doc: {
+          ...doc,
+          images: doc.images.map((im) =>
+            ids.has(im.id) ? { ...im, x: im.x + dx, y: im.y + dy } : im,
+          ),
+        },
+      }
+    }
+    case 'removeStrokes': {
+      const ids = new Set(action.ids)
+      return { ...state, doc: { ...doc, strokes: doc.strokes.filter((s) => !ids.has(s.id)) } }
+    }
+    case 'removeImages': {
+      const ids = new Set(action.ids)
+      return { ...state, doc: { ...doc, images: doc.images.filter((im) => !ids.has(im.id)) } }
+    }
     case 'commitFrame': {
       const newIndex = doc.frameCount
       const newCount = doc.frameCount + 1

@@ -22,8 +22,22 @@ export function useScene() {
   const replaceElement = (el: SceneElement) =>
     setScene((s) => ({ elements: s.elements.map((e) => (e.id === el.id ? el : e)) }))
 
+  /** Replace several elements in one update (by id). */
+  const replaceElements = (els: SceneElement[]) =>
+    setScene((s) => {
+      const byId = new Map(els.map((e) => [e.id, e]))
+      return { elements: s.elements.map((e) => byId.get(e.id) ?? e) }
+    })
+
   const removeElement = (id: string) =>
     setScene((s) => ({ elements: s.elements.filter((e) => e.id !== id) }))
+
+  /** Remove several elements in one update. */
+  const removeElements = (ids: string[]) =>
+    setScene((s) => {
+      const drop = new Set(ids)
+      return { elements: s.elements.filter((e) => !drop.has(e.id)) }
+    })
 
   const updateAnimDoc = (id: string, doc: Doc) =>
     setScene((s) => ({
@@ -32,5 +46,14 @@ export function useScene() {
       ),
     }))
 
-  return { scene, addElement, updateElement, replaceElement, removeElement, updateAnimDoc }
+  return {
+    scene,
+    addElement,
+    updateElement,
+    replaceElement,
+    replaceElements,
+    removeElement,
+    removeElements,
+    updateAnimDoc,
+  }
 }

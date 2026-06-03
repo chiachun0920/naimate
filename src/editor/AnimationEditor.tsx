@@ -6,6 +6,8 @@ import { PlaybackBar } from '../components/PlaybackBar'
 import { ExportMenu } from '../components/ExportMenu'
 import { ZoomControls } from '../components/ZoomControls'
 import { AnimationImageOverlay } from './AnimationImageOverlay'
+import { AnimationSelectionOverlay } from './AnimationSelectionOverlay'
+import type { LassoSelection } from '../canvas/DrawCanvas'
 import { usePlayback } from '../hooks/usePlayback'
 import { useDoc } from '../state/useDoc'
 import type { Doc } from '../state/docReducer'
@@ -37,6 +39,11 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
   const [view, setView] = useState<View>(DEFAULT_VIEW)
   const [imageUrl, setImageUrl] = useState<string | null>(null) // null = dialog closed
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
+  const [chromeHidden, setChromeHidden] = useState(false)
+  const [lassoSel, setLassoSel] = useState<LassoSelection>({ strokeIds: [], imageIds: [] })
+  const clearLasso = () => setLassoSel({ strokeIds: [], imageIds: [] })
+  // Drop the lasso selection when the tool or the edited frame changes.
+  useEffect(() => clearLasso(), [tool, currentFrame])
 
   // While drawing, lock the chrome out of touches (palm-near-edge protection).
   // Restore a beat after the stroke ends so a lifting palm can't trigger a tap.
@@ -111,6 +118,13 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
           onErase={(id) => dispatch({ type: 'removeStroke', id })}
           onDrawingChange={handleDrawingChange}
           onViewChange={setView}
+          selection={lassoSel}
+          onLassoSelect={setLassoSel}
+          onSelectionMove={(dx, dy) => {
+            dispatch({ type: 'translateStrokes', ids: lassoSel.strokeIds, dx, dy })
+            dispatch({ type: 'translateImages', ids: lassoSel.imageIds, dx, dy })
+          }}
+          onClearSelection={clearLasso}
         />
         {!isPlaying && tool === 'image' && (
           <AnimationImageOverlay
@@ -126,6 +140,18 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
             }}
           />
         )}
+        {!isPlaying && tool === 'lasso' && (lassoSel.strokeIds.length > 0 || lassoSel.imageIds.length > 0) && (
+          <AnimationSelectionOverlay
+            doc={doc}
+            view={view}
+            selection={lassoSel}
+            onDelete={() => {
+              dispatch({ type: 'removeStrokes', ids: lassoSel.strokeIds })
+              dispatch({ type: 'removeImages', ids: lassoSel.imageIds })
+              clearLasso()
+            }}
+          />
+        )}
         {!isPlaying && (
           <div className="stage-badge">
             編輯第 {currentFrame + 1} / {doc.frameCount} 幀 · {doc.mode === 'independent' ? '獨立' : '累進'}
@@ -133,6 +159,7 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
         )}
       </div>
 
+      {!chromeHidden && (
       <div className="overlay overlay-top">
         <div className="panel">
           <button className="back" onClick={onClose} title="返回畫布">
@@ -154,7 +181,9 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
           <ExportMenu doc={doc} width={stage.width} height={stage.height} dispatch={dispatch} />
         </div>
       </div>
+      )}
 
+      {!chromeHidden && (
       <div className="overlay overlay-bottom">
         <div className="panel bottom-panel">
           <div className="bottom-row">
@@ -186,6 +215,15 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
           )}
         </div>
       </div>
+      )}
+
+      <button
+        className="chrome-fab"
+        title={chromeHidden ? '顯示工具列' : '純畫布（隱藏工具）'}
+        onClick={() => setChromeHidden((h) => !h)}
+      >
+        {chromeHidden ? '🧰' : '⛶'}
+      </button>
 
       {imageUrl !== null && (
         <div className="url-dialog">
