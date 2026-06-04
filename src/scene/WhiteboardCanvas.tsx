@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { clampScale } from '../canvas/DrawCanvas'
 import { drawSceneElement } from './elements/draw'
 import { subscribeImageLoad } from './elements/imageCache'
-import { boxInPolygon, bounds, hitTest, normBox, translate } from './elements/geometry'
+import { boxInPolygon, bounds, hitTest, normBox, translate, unionBounds, type Box } from './elements/geometry'
 import type { BoxEl, DrawnElement, SceneElement, Style } from './elements/types'
 import { makeId } from './sceneModel'
 
@@ -12,7 +12,7 @@ export interface View {
   ty: number
 }
 
-export type Tool = 'select' | 'lasso' | 'pen' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text'
+export type Tool = 'select' | 'lasso' | 'frame' | 'pen' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text'
 
 interface Props {
   elements: SceneElement[]
@@ -29,6 +29,19 @@ interface Props {
   onSelectMany: (ids: string[]) => void
   onOpenAnim: (id: string) => void
   onStartText: (worldX: number, worldY: number) => void
+  /** Frame tool: a rectangle was dragged out (world-space box). */
+  onAddFrame: (box: Box) => void
+}
+
+const FRAME_STROKE = 'rgba(80, 90, 110, 0.7)'
+
+/** Draw a frame's outline in world coordinates (caller has set the view transform). */
+function strokeFrameOutline(g: CanvasRenderingContext2D, b: Box, scale: number) {
+  g.save()
+  g.strokeStyle = FRAME_STROKE
+  g.lineWidth = 1.5 / scale
+  g.strokeRect(b.x, b.y, b.w, b.h)
+  g.restore()
 }
 
 export function WhiteboardCanvas({
@@ -46,6 +59,7 @@ export function WhiteboardCanvas({
   onSelectMany,
   onOpenAnim,
   onStartText,
+  onAddFrame,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const bgRef = useRef<HTMLCanvasElement | null>(null)
@@ -73,6 +87,8 @@ export function WhiteboardCanvas({
   >(null)
   // Lasso polygon (world coords) while the lasso tool is dragging.
   const lasso = useRef<number[][] | null>(null)
+  // Frame rectangle (world coords) while the frame tool is dragging.
+  const frameDraft = useRef<Box | null>(null)
   const lastTap = useRef<{ t: number; id: string | null }>({ t: 0, id: null })
 
   const rel = (e: { clientX: number; clientY: number }) => {
@@ -101,8 +117,15 @@ export function WhiteboardCanvas({
       g.setTransform(1, 0, 0, 1, 0, 0)
       g.clearRect(0, 0, bg.width, bg.height)
       setViewTransform(g)
+      const scale = viewRef.current.scale
+      // Frames first so their outlines sit behind the drawn content.
       for (const el of elementsRef.current) {
-        if (el.type === 'animation') continue // drawn as a DOM card
+        if (el.type !== 'frame') continue
+        if (exceptIds?.has(el.id)) continue
+        strokeFrameOutline(g, bounds(el), scale)
+      }
+      for (const el of elementsRef.current) {
+        if (el.type === 'animation' || el.type === 'frame') continue // anim = DOM card, frame = above
         if (exceptIds?.has(el.id)) continue
         drawSceneElement(g, el as DrawnElement)
       }
@@ -133,8 +156,22 @@ export function WhiteboardCanvas({
       drawSceneElement(g, draft.current)
     } else if (move.current) {
       for (const el of move.current.live) {
-        if (el.type !== 'animation') drawSceneElement(g, el as DrawnElement)
+        if (el.type === 'frame') strokeFrameOutline(g, bounds(el), viewRef.current.scale)
+        else if (el.type !== 'animation') drawSceneElement(g, el as DrawnElement)
       }
+    } else if (frameDraft.current) {
+      const b = normBox(frameDraft.current.x, frameDraft.current.y, frameDraft.current.w, frameDraft.current.h)
+      g.save()
+      g.lineJoin = 'round'
+      g.lineWidth = 1.5 / viewRef.current.scale
+      g.setLineDash([6 / viewRef.current.scale, 4 / viewRef.current.scale])
+      g.strokeStyle = '#2a6fdb'
+      g.fillStyle = 'rgba(42, 111, 219, 0.06)'
+      g.beginPath()
+      g.rect(b.x, b.y, b.w, b.h)
+      g.fill()
+      g.stroke()
+      g.restore()
     } else if (lasso.current && lasso.current.length > 1) {
       const poly = lasso.current
       g.save()
@@ -216,9 +253,17 @@ export function WhiteboardCanvas({
 
   const hitTopmost = (wx: number, wy: number): SceneElement | null => {
     const tol = 8 / viewRef.current.scale
-    for (let i = elementsRef.current.length - 1; i >= 0; i--) {
-      const el = elementsRef.current[i]
+    const els = elementsRef.current
+    // Content takes priority; frames are lowest so a click inside a frame grabs
+    // the content over it, and only empty frame interior selects the frame.
+    for (let i = els.length - 1; i >= 0; i--) {
+      const el = els[i]
+      if (el.type === 'frame') continue
       if (hitTest(el, wx, wy, tol)) return el
+    }
+    for (let i = els.length - 1; i >= 0; i--) {
+      const el = els[i]
+      if (el.type === 'frame' && hitTest(el, wx, wy, tol)) return el
     }
     return null
   }
@@ -277,6 +322,19 @@ export function WhiteboardCanvas({
         gesture.current = { kind: 'pan', sx: p.x, sy: p.y, tx0: v.tx, ty0: v.ty }
         return
       }
+      // Pressing inside the current selection drags the whole group (like the
+      // animation editor); pressing outside starts a fresh lasso polygon.
+      const sel = selectedIdsRef.current
+      if (sel.length > 0) {
+        const selEls = elementsRef.current.filter((e) => sel.includes(e.id))
+        const b = unionBounds(selEls)
+        const tol = 6 / viewRef.current.scale
+        if (w.x >= b.x - tol && w.x <= b.x + b.w + tol && w.y >= b.y - tol && w.y <= b.y + b.h + tol) {
+          move.current = { sx: p.x, sy: p.y, els0: selEls, live: selEls }
+          renderBg(new Set(sel))
+          return
+        }
+      }
       lasso.current = [[w.x, w.y]]
       renderBg()
       paintLive()
@@ -291,6 +349,12 @@ export function WhiteboardCanvas({
     }
     if (tool === 'text') {
       onStartText(w.x, w.y)
+      return
+    }
+    if (tool === 'frame') {
+      frameDraft.current = { x: w.x, y: w.y, w: 0, h: 0 }
+      renderBg()
+      paintLive()
       return
     }
     draft.current = newDraft(w.x, w.y, e.pressure && e.pressure > 0 ? e.pressure : 0.5)
@@ -318,6 +382,13 @@ export function WhiteboardCanvas({
     }
     if (g?.kind === 'pan') {
       onViewChange({ scale: viewRef.current.scale, tx: g.tx0 + (p.x - g.sx), ty: g.ty0 + (p.y - g.sy) })
+      return
+    }
+    if (frameDraft.current) {
+      const w = toWorld(p.x, p.y)
+      frameDraft.current.w = w.x - frameDraft.current.x
+      frameDraft.current.h = w.y - frameDraft.current.y
+      schedule(paintLive)
       return
     }
     if (lasso.current) {
@@ -377,6 +448,17 @@ export function WhiteboardCanvas({
     if (gesture.current) {
       if (gesture.current.kind === 'pinch' && pointers.current.size >= 2) return
       gesture.current = null
+      return
+    }
+    if (frameDraft.current) {
+      const d = frameDraft.current
+      frameDraft.current = null
+      const b = normBox(d.x, d.y, d.w, d.h)
+      if (b.w < 2 && b.h < 2) {
+        paintStatic()
+        return
+      }
+      onAddFrame(b)
       return
     }
     if (lasso.current) {

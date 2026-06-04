@@ -4,6 +4,8 @@ import { AnimationEditor } from '../editor/AnimationEditor'
 import { AnimationObjectCard } from './AnimationObjectCard'
 import { SceneToolbar } from './SceneToolbar'
 import { SelectionOverlay } from './SelectionOverlay'
+import { FrameLabelsOverlay } from './FrameLabelsOverlay'
+import { FrameListPanel } from './FrameListPanel'
 import { WhiteboardCanvas, type Tool, type View } from './WhiteboardCanvas'
 import { useScene } from './useScene'
 import {
@@ -13,13 +15,22 @@ import {
   OBJ_W,
   makeId,
   newAnimationElement,
+  newFrameElement,
   newImageElement,
 } from './sceneModel'
-import type { SceneElement, Style, TextEl } from './elements/types'
+import type { Box } from './elements/geometry'
+import type { FrameEl, SceneElement, Style, TextEl } from './elements/types'
 
 export function SceneEditor() {
-  const { scene, addElement, replaceElement, replaceElements, removeElements, updateAnimDoc } =
-    useScene()
+  const {
+    scene,
+    addElement,
+    replaceElement,
+    replaceElements,
+    removeElements,
+    updateAnimDoc,
+    reorderFrames,
+  } = useScene()
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 })
   const [tool, setTool] = useState<Tool>('select')
   const [style, setStyle] = useState<Style>(DEFAULT_STYLE)
@@ -53,6 +64,7 @@ export function SceneEditor() {
 
   const selectedEls = scene.elements.filter((e) => selectedIds.includes(e.id))
   const animElements = scene.elements.filter((e) => e.type === 'animation')
+  const frameElements = scene.elements.filter((e): e is FrameEl => e.type === 'frame')
   const openEl = openId ? scene.elements.find((e) => e.id === openId) : null
 
   // While an animation is open, render ONLY the editor — unmounting the whiteboard
@@ -103,6 +115,25 @@ export function SceneEditor() {
     addElement(el)
     setSelectedIds([el.id])
     setTool('select')
+  }
+
+  const addFrame = (box: Box) => {
+    const el = newFrameElement(box, frameElements.length + 1)
+    addElement(el)
+    setSelectedIds([el.id])
+    setTool('select')
+  }
+
+  // Instantly retarget the view so the frame fits, centred, with a little padding.
+  const goToFrame = (f: FrameEl) => {
+    if (f.w <= 0 || f.h <= 0) return
+    const pad = 0.9
+    const scale = clampScale(Math.min(stage.width / f.w, stage.height / f.h) * pad)
+    setView({
+      scale,
+      tx: stage.width / 2 - scale * (f.x + f.w / 2),
+      ty: stage.height / 2 - scale * (f.y + f.h / 2),
+    })
   }
 
   const submitImage = () => {
@@ -160,13 +191,16 @@ export function SceneEditor() {
           onViewChange={setView}
           onAddElement={(el: SceneElement) => {
             addElement(el)
-            setSelectedIds([el.id])
+            // Pen strokes commit cleanly (like the animation editor) — no auto
+            // selection box; shapes/text/image/anim auto-select for quick tweaks.
+            setSelectedIds(el.type === 'freedraw' ? [] : [el.id])
           }}
           onUpdateElements={replaceElements}
           onSelect={selectOne}
           onSelectMany={setSelectedIds}
           onOpenAnim={setOpenId}
           onStartText={(x, y) => setEditingText({ x, y, value: '' })}
+          onAddFrame={addFrame}
         />
 
         <div
@@ -177,6 +211,8 @@ export function SceneEditor() {
             <AnimationObjectCard key={el.id} el={el} scale={view.scale} />
           ))}
         </div>
+
+        <FrameLabelsOverlay frames={frameElements} view={view} />
 
         {selectedEls.length > 0 && (
           <SelectionOverlay
@@ -233,6 +269,23 @@ export function SceneEditor() {
           onDelete={deleteSelected}
           onInsertAnim={insertAnim}
           onInsertImage={() => setImageUrl('')}
+        />
+      )}
+
+      {!chromeHidden && (
+        <FrameListPanel
+          frames={frameElements}
+          selectedIds={selectedIds}
+          onGo={goToFrame}
+          onRename={(id, name) => {
+            const f = frameElements.find((e) => e.id === id)
+            if (f) replaceElement({ ...f, name })
+          }}
+          onDelete={(id) => {
+            removeElements([id])
+            setSelectedIds((ids) => ids.filter((x) => x !== id))
+          }}
+          onReorder={reorderFrames}
         />
       )}
 

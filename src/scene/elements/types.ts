@@ -60,8 +60,20 @@ export interface AnimEl {
   doc: Doc
 }
 
-export type SceneElement = FreedrawEl | BoxEl | LineEl | TextEl | ImageEl | AnimEl
-export type DrawnElement = Exclude<SceneElement, AnimEl>
+/** A named rectangular region of the board. Outline drawn by the canvas; label
+ * by a screen-space DOM overlay. Reuses the unified select/move/resize machinery. */
+export interface FrameEl {
+  type: 'frame'
+  id: string
+  x: number
+  y: number
+  w: number
+  h: number
+  name: string
+}
+
+export type SceneElement = FreedrawEl | BoxEl | LineEl | TextEl | ImageEl | AnimEl | FrameEl
+export type DrawnElement = Exclude<SceneElement, AnimEl | FrameEl>
 export type ElementType = SceneElement['type']
 
 export const FONT_FAMILY = "system-ui, -apple-system, 'PingFang TC', sans-serif"

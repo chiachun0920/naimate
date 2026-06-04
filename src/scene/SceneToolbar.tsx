@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { Style } from './elements/types'
 import type { Tool } from './WhiteboardCanvas'
 
@@ -21,6 +22,7 @@ interface Props {
 const TOOLS: { id: Tool; label: string; title: string }[] = [
   { id: 'select', label: '⤢', title: '選取' },
   { id: 'lasso', label: '⬚', title: '套索（圈選多個）' },
+  { id: 'frame', label: '▦', title: '框架（圈選範圍）' },
   { id: 'pen', label: '✏️', title: '筆' },
   { id: 'rect', label: '▭', title: '矩形' },
   { id: 'ellipse', label: '◯', title: '橢圓' },
@@ -49,6 +51,26 @@ export function SceneToolbar({
   onInsertAnim,
   onInsertImage,
 }: Props) {
+  const [collapsed, setCollapsed] = useState(false)
+  const active = TOOLS.find((t) => t.id === tool) ?? TOOLS[0]
+
+  if (collapsed) {
+    return (
+      <div className="scene-toolbar collapsed">
+        <button
+          className="tool active"
+          title={`目前：${active.title}（點擊展開工具列）`}
+          onClick={() => setCollapsed(false)}
+        >
+          {active.label}
+        </button>
+        <button className="tb-collapse" title="展開工具列" onClick={() => setCollapsed(false)}>
+          ⌄
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="scene-toolbar">
       <div className="group">
@@ -137,6 +159,12 @@ export function SceneToolbar({
           {Math.round(scale * 100)}%
         </button>
         <button onClick={onZoomIn}>＋</button>
+      </div>
+
+      <div className="group">
+        <button className="tb-collapse" title="收折工具列" onClick={() => setCollapsed(true)}>
+          ⌃
+        </button>
       </div>
     </div>
   )

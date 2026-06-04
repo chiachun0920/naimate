@@ -101,6 +101,7 @@ export function bounds(el: SceneElement): Box {
     }
     case 'image':
     case 'animation':
+    case 'frame':
       return { x: el.x, y: el.y, w: el.w, h: el.h }
   }
 }
@@ -188,7 +189,8 @@ export function hitTest(el: SceneElement, px: number, py: number, tol: number): 
       return distToSeg(px, py, el.x1, el.y1, el.x2, el.y2) <= el.strokeWidth / 2 + tol + 3
     case 'text':
     case 'image':
-    case 'animation': {
+    case 'animation':
+    case 'frame': {
       const b = bounds(el)
       return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h
     }

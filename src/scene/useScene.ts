@@ -46,6 +46,16 @@ export function useScene() {
       ),
     }))
 
+  /** Reorder only the frame elements (by id), leaving every other element in place. */
+  const reorderFrames = (orderedIds: string[]) =>
+    setScene((s) => {
+      const q = orderedIds
+        .map((id) => s.elements.find((e) => e.id === id && e.type === 'frame'))
+        .filter((e): e is SceneElement => Boolean(e))
+      let k = 0
+      return { elements: s.elements.map((e) => (e.type === 'frame' ? (q[k++] ?? e) : e)) }
+    })
+
   return {
     scene,
     addElement,
@@ -55,5 +65,6 @@ export function useScene() {
     removeElement,
     removeElements,
     updateAnimDoc,
+    reorderFrames,
   }
 }

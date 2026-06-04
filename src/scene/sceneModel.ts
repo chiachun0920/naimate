@@ -1,5 +1,6 @@
 import { DEFAULT_DOC } from '../state/docReducer'
-import type { AnimEl, ImageEl, SceneElement, Style } from './elements/types'
+import type { Box } from './elements/geometry'
+import type { AnimEl, FrameEl, ImageEl, SceneElement, Style } from './elements/types'
 
 export type { SceneElement } from './elements/types'
 
@@ -41,6 +42,11 @@ export function newImageElement(
   const w = ratio >= 1 ? IMG_MAX : IMG_MAX * ratio
   const h = ratio >= 1 ? IMG_MAX / ratio : IMG_MAX
   return { type: 'image', id: makeId(), x: cx - w / 2, y: cy - h / 2, w, h, src }
+}
+
+/** A named frame covering the given world-space box. */
+export function newFrameElement(box: Box, index: number): FrameEl {
+  return { type: 'frame', id: makeId(), x: box.x, y: box.y, w: box.w, h: box.h, name: `框架 ${index}` }
 }
 
 /** A fresh, empty animation element at the given top-left world position. */
