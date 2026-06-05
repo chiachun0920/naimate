@@ -11,6 +11,9 @@ export function useScene() {
     saveScene(scene)
   }, [scene])
 
+  /** Replace the entire whiteboard (e.g. importing a project file). */
+  const replaceScene = (next: Scene) => setScene(next)
+
   const addElement = (el: SceneElement) =>
     setScene((s) => ({ elements: [...s.elements, el] }))
 
@@ -58,6 +61,7 @@ export function useScene() {
 
   return {
     scene,
+    replaceScene,
     addElement,
     updateElement,
     replaceElement,

@@ -8,6 +8,7 @@ import { FrameLabelsOverlay } from './FrameLabelsOverlay'
 import { FrameListPanel } from './FrameListPanel'
 import { WhiteboardCanvas, type Tool, type View } from './WhiteboardCanvas'
 import { useScene } from './useScene'
+import { exportScene, importScene } from '../lib/storage'
 import {
   DEFAULT_FONT_SIZE,
   DEFAULT_STYLE,
@@ -24,6 +25,7 @@ import type { FrameEl, SceneElement, Style, TextEl } from './elements/types'
 export function SceneEditor() {
   const {
     scene,
+    replaceScene,
     addElement,
     replaceElement,
     replaceElements,
@@ -155,6 +157,20 @@ export function SceneEditor() {
     img.src = url
   }
 
+  const exportBoard = () => exportScene(scene)
+  const importBoard = async (file: File) => {
+    try {
+      const s = await importScene(file)
+      if (confirm('匯入將取代目前白板內容，確定？')) {
+        replaceScene(s)
+        setSelectedIds([])
+        setOpenId(null)
+      }
+    } catch (e) {
+      alert('載入失敗：' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+
   const commitText = () => {
     if (!editingText) return
     const text = editingText.value.replace(/\s+$/, '')
@@ -269,6 +285,8 @@ export function SceneEditor() {
           onDelete={deleteSelected}
           onInsertAnim={insertAnim}
           onInsertImage={() => setImageUrl('')}
+          onExport={exportBoard}
+          onImport={importBoard}
         />
       )}
 

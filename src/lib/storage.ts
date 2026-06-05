@@ -79,6 +79,19 @@ export function loadScene(): Scene {
   return { elements: [] }
 }
 
+export function exportScene(scene: Scene): void {
+  const blob = new Blob([JSON.stringify(scene, null, 2)], { type: 'application/json' })
+  download(blob, 'nanimate-board.json')
+}
+
+export function importScene(file: File): Promise<Scene> {
+  return file.text().then((text) => {
+    const parsed = JSON.parse(text)
+    if (!parsed || !Array.isArray(parsed.elements)) throw new Error('Invalid nanimate board file')
+    return { elements: (parsed.elements as SceneElement[]).map(normalizeElement) }
+  })
+}
+
 export function exportJson(doc: Doc): void {
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
   download(blob, 'nanimate.json')

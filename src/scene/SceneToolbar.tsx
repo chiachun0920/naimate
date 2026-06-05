@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { Style } from './elements/types'
 import type { Tool } from './WhiteboardCanvas'
 
@@ -17,6 +17,8 @@ interface Props {
   onDelete: () => void
   onInsertAnim: () => void
   onInsertImage: () => void
+  onExport: () => void
+  onImport: (file: File) => void
 }
 
 const TOOLS: { id: Tool; label: string; title: string }[] = [
@@ -50,8 +52,11 @@ export function SceneToolbar({
   onDelete,
   onInsertAnim,
   onInsertImage,
+  onExport,
+  onImport,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
   const active = TOOLS.find((t) => t.id === tool) ?? TOOLS[0]
 
   if (collapsed) {
@@ -159,6 +164,26 @@ export function SceneToolbar({
           {Math.round(scale * 100)}%
         </button>
         <button onClick={onZoomIn}>＋</button>
+      </div>
+
+      <div className="group">
+        <button onClick={onExport} title="匯出整個白板為 .json 專案檔">
+          匯出
+        </button>
+        <button onClick={() => fileRef.current?.click()} title="匯入白板專案檔（取代目前白板）">
+          匯入
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) onImport(f)
+            e.target.value = ''
+          }}
+        />
       </div>
 
       <div className="group">

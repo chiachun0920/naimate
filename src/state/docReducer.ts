@@ -15,6 +15,8 @@ export interface Stroke {
   birthFrame: number
   color: string
   size: number
+  /** True if carried over (copied) from the previous frame in independent mode. */
+  seed?: boolean
 }
 
 /** A raster image (remote URL) placed on a frame; behaves like a stroke w.r.t. frames. */
@@ -26,6 +28,8 @@ export interface AnimImage {
   w: number
   h: number
   birthFrame: number
+  /** True if carried over (copied) from the previous frame in independent mode. */
+  seed?: boolean
 }
 
 /**
@@ -201,13 +205,13 @@ export function reducer(state: EditorState, action: Action): EditorState {
         doc.mode === 'independent'
           ? doc.strokes
               .filter((s) => s.birthFrame === state.currentFrame)
-              .map((s) => ({ ...s, id: makeId(), birthFrame: newIndex }))
+              .map((s) => ({ ...s, id: makeId(), birthFrame: newIndex, seed: true }))
           : []
       const copiedImages =
         doc.mode === 'independent'
           ? doc.images
               .filter((im) => im.birthFrame === state.currentFrame)
-              .map((im) => ({ ...im, id: makeId(), birthFrame: newIndex }))
+              .map((im) => ({ ...im, id: makeId(), birthFrame: newIndex, seed: true }))
           : []
       return {
         ...state,

@@ -252,6 +252,15 @@ body {
   height: 34px;
   color: #64748b;
 }
+.toolbar-pill {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+}
+.toolbar-pill button {
+  min-width: 34px;
+  height: 34px;
+}
 
 /* Selection overlay (screen space) ---------------------------------------- */
 .sel-box {
@@ -647,9 +656,19 @@ button.size .dot {
   color: var(--muted);
 }
 .playback .count {
-  margin-left: auto;
   font-size: 13px;
   color: var(--muted);
+  white-space: nowrap;
+}
+.playback .step {
+  min-width: 40px;
+}
+.playback .step:disabled {
+  opacity: 0.4;
+}
+.playback .scrub {
+  flex: 1;
+  min-width: 80px;
 }
 
 /* Timeline ---------------------------------------------------------------- */

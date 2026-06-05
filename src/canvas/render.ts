@@ -29,6 +29,12 @@ export function renderFrame(
   opts: RenderOpts,
 ): void {
   const { width, height, dimOlder = false, background = '#ffffff', cors = false } = opts
+  // Fade content carried over from an earlier frame so the current frame's new
+  // strokes stand out. Additive: anything born before this frame. Independent:
+  // the seeded copies brought in by "完成這一幀". Editing aid only — callers
+  // pass dimOlder:false for playback/thumbnails/export, so output stays solid.
+  const isDimmed = (born: number, seed?: boolean) =>
+    dimOlder && (doc.mode === 'independent' ? !!seed : born < frameIndex)
   ctx.save()
   if (background) {
     ctx.fillStyle = background
@@ -39,14 +45,14 @@ export function renderFrame(
     if (!isBirthOnFrame(im.birthFrame, frameIndex, doc.mode)) continue
     const img = getImage(im.src, cors)
     if (img) {
-      ctx.globalAlpha = dimOlder && im.birthFrame < frameIndex ? 0.22 : 1
+      ctx.globalAlpha = isDimmed(im.birthFrame, im.seed) ? 0.22 : 1
       ctx.drawImage(img, im.x, im.y, im.w, im.h)
     }
   }
   ctx.globalAlpha = 1
   for (const s of doc.strokes) {
     if (!isStrokeOnFrame(s, frameIndex, doc.mode)) continue
-    ctx.globalAlpha = dimOlder && s.birthFrame < frameIndex ? 0.22 : 1
+    ctx.globalAlpha = isDimmed(s.birthFrame, s.seed) ? 0.22 : 1
     ctx.fillStyle = s.color
     ctx.fill(strokeToPath(s.points, s.size))
   }

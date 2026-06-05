@@ -10,7 +10,9 @@ import { AnimationSelectionOverlay } from './AnimationSelectionOverlay'
 import type { LassoSelection } from '../canvas/DrawCanvas'
 import { usePlayback } from '../hooks/usePlayback'
 import { useDoc } from '../state/useDoc'
-import type { Doc } from '../state/docReducer'
+import type { Doc, Tool } from '../state/docReducer'
+
+const TOOL_ICON: Record<Tool, string> = { pen: '✏️', eraser: '🧽', image: '🖼', lasso: '⬚' }
 
 const IMG_MAX = 360 // longest side of a freshly inserted image (world units)
 let imgIdCounter = 0
@@ -40,6 +42,7 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
   const [imageUrl, setImageUrl] = useState<string | null>(null) // null = dialog closed
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
   const [chromeHidden, setChromeHidden] = useState(false)
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false)
   const [lassoSel, setLassoSel] = useState<LassoSelection>({ strokeIds: [], imageIds: [] })
   const clearLasso = () => setLassoSel({ strokeIds: [], imageIds: [] })
   // Drop the lasso selection when the tool or the edited frame changes.
@@ -69,7 +72,13 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
     return () => ro.disconnect()
   }, [])
 
-  const { isPlaying, playhead, toggle } = usePlayback(doc.frameCount, doc.fps, loop)
+  const { isPlaying, playhead, preview, toggle, step, seek, exitPreview } = usePlayback(
+    doc.frameCount,
+    doc.fps,
+    loop,
+  )
+  // Picking an edit frame (timeline thumbnail / commitFrame) leaves manual preview.
+  useEffect(() => exitPreview(), [currentFrame, exitPreview])
 
   const submitImage = () => {
     const url = (imageUrl ?? '').trim()
@@ -106,7 +115,7 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
         <DrawCanvas
           doc={doc}
           currentFrame={currentFrame}
-          displayFrame={isPlaying ? playhead : null}
+          displayFrame={preview ? playhead : null}
           color={color}
           size={size}
           tool={tool}
@@ -159,7 +168,24 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
         )}
       </div>
 
-      {!chromeHidden && (
+      {!chromeHidden && toolbarCollapsed && (
+        <div className="overlay overlay-top">
+          <div className="panel toolbar-pill">
+            <button title="目前工具（點擊展開工具列）" onClick={() => setToolbarCollapsed(false)}>
+              {TOOL_ICON[tool] ?? '✏️'}
+            </button>
+            <button
+              className="tb-collapse"
+              title="展開工具列"
+              onClick={() => setToolbarCollapsed(false)}
+            >
+              ⌄
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!chromeHidden && !toolbarCollapsed && (
       <div className="overlay overlay-top">
         <div className="panel">
           <button className="back" onClick={onClose} title="返回畫布">
@@ -180,6 +206,11 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
         <div className="panel">
           <ExportMenu doc={doc} width={stage.width} height={stage.height} dispatch={dispatch} />
         </div>
+        <div className="panel">
+          <button className="tb-collapse" title="收折工具列" onClick={() => setToolbarCollapsed(true)}>
+            ⌃
+          </button>
+        </div>
       </div>
       )}
 
@@ -191,8 +222,11 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
               doc={doc}
               isPlaying={isPlaying}
               loop={loop}
+              position={preview ? playhead : currentFrame}
               onToggle={toggle}
               onLoopChange={setLoop}
+              onStep={step}
+              onSeek={seek}
               dispatch={dispatch}
             />
             <button
@@ -207,7 +241,7 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
             <Timeline
               doc={doc}
               currentFrame={currentFrame}
-              playhead={isPlaying ? playhead : null}
+              playhead={preview ? playhead : null}
               canvasWidth={stage.width}
               canvasHeight={stage.height}
               dispatch={dispatch}
