@@ -1,6 +1,7 @@
 import type { Doc } from '../state/docReducer'
 import { isBirthOnFrame, isStrokeOnFrame } from '../state/docReducer'
 import { getImage } from '../lib/imageCache'
+import { drawSceneElement } from '../scene/elements/draw'
 import { strokeToPath } from './strokePath'
 
 export interface RenderOpts {
@@ -50,9 +51,47 @@ export function renderFrame(
     }
   }
   ctx.globalAlpha = 1
+  // Shapes render above images but below strokes (ink annotates on top).
+  for (const sh of doc.shapes ?? []) {
+    if (!isBirthOnFrame(sh.birthFrame, frameIndex, doc.mode)) continue
+    ctx.globalAlpha = isDimmed(sh.birthFrame, sh.seed) ? 0.22 : 1
+    drawSceneElement(ctx, sh) // AnimShape is structurally a DrawnElement
+  }
+  ctx.globalAlpha = 1
   for (const s of doc.strokes) {
     if (!isStrokeOnFrame(s, frameIndex, doc.mode)) continue
     ctx.globalAlpha = isDimmed(s.birthFrame, s.seed) ? 0.22 : 1
+    ctx.fillStyle = s.color
+    ctx.fill(strokeToPath(s.points, s.size))
+  }
+  ctx.restore()
+}
+
+/**
+ * Draw ONLY the content born exactly on `birthIndex` (no background, no dimming).
+ * Used for incremental additive thumbnail building: frame N's image = frame N-1's
+ * image + this frame's contribution, turning the timeline's O(frames²) thumbnail
+ * cost into O(frames + strokes). Sub-order matches renderFrame (images→shapes→strokes).
+ */
+export function renderFrameContribution(
+  ctx: CanvasRenderingContext2D,
+  doc: Doc,
+  birthIndex: number,
+  opts: { cors?: boolean } = {},
+): void {
+  const { cors = false } = opts
+  ctx.save()
+  for (const im of doc.images ?? []) {
+    if (im.birthFrame !== birthIndex) continue
+    const img = getImage(im.src, cors)
+    if (img) ctx.drawImage(img, im.x, im.y, im.w, im.h)
+  }
+  for (const sh of doc.shapes ?? []) {
+    if (sh.birthFrame !== birthIndex) continue
+    drawSceneElement(ctx, sh)
+  }
+  for (const s of doc.strokes) {
+    if (s.birthFrame !== birthIndex) continue
     ctx.fillStyle = s.color
     ctx.fill(strokeToPath(s.points, s.size))
   }

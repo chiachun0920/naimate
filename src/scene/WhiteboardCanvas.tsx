@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { clampScale } from '../canvas/DrawCanvas'
+import { strokeToPath } from '../canvas/strokePath'
 import { drawSceneElement } from './elements/draw'
 import { subscribeImageLoad } from './elements/imageCache'
 import { boxInPolygon, bounds, hitTest, normBox, translate, unionBounds, type Box } from './elements/geometry'
-import type { BoxEl, DrawnElement, SceneElement, Style } from './elements/types'
+import { FONT_FAMILY, type BoxEl, type DrawnElement, type SceneElement, type Style } from './elements/types'
 import { makeId } from './sceneModel'
 
 export interface View {
@@ -41,6 +42,27 @@ function strokeFrameOutline(g: CanvasRenderingContext2D, b: Box, scale: number) 
   g.strokeStyle = FRAME_STROKE
   g.lineWidth = 1.5 / scale
   g.strokeRect(b.x, b.y, b.w, b.h)
+  g.restore()
+}
+
+/** Drag-preview ghost for an animation card (it lives in the DOM, so the canvas
+ * has to stand in for it during a move). Dashed box + the name, centred. */
+function strokeAnimGhost(g: CanvasRenderingContext2D, b: Box, name: string, scale: number) {
+  g.save()
+  g.lineWidth = 1.5 / scale
+  g.setLineDash([6 / scale, 4 / scale])
+  g.strokeStyle = '#2a6fdb'
+  g.fillStyle = 'rgba(42, 111, 219, 0.08)'
+  g.beginPath()
+  g.rect(b.x, b.y, b.w, b.h)
+  g.fill()
+  g.stroke()
+  g.setLineDash([])
+  g.fillStyle = '#2a6fdb'
+  g.font = `${13 / scale}px ${FONT_FAMILY}`
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  g.fillText(name, b.x + b.w / 2, b.y + b.h / 2)
   g.restore()
 }
 
@@ -99,6 +121,11 @@ export function WhiteboardCanvas({
     const v = viewRef.current
     return { x: (sx - v.tx) / v.scale, y: (sy - v.ty) / v.scale }
   }
+  // Intentionally a no-op: we do NOT use setPointerCapture. On iPadOS Safari its
+  // capture lifecycle swallows the next quickly-arriving pointerdown (a fast 2nd
+  // stroke gets no events at all). The canvas covers the whole board and
+  // touch-action:none is set, so capture isn't needed.
+  const capture = (_id: number) => {}
 
   const setViewTransform = useCallback(
     (g: CanvasRenderingContext2D) => {
@@ -153,11 +180,26 @@ export function WhiteboardCanvas({
     blit()
     setViewTransform(g)
     if (draft.current) {
-      drawSceneElement(g, draft.current)
+      const d = draft.current
+      if (d.type === 'freedraw') {
+        // In-progress freedraw mutates one points array in place; draw it with
+        // isLast=false so it bypasses the strokeToPath cache (which is keyed by
+        // the array reference and would otherwise return a stale path).
+        g.save()
+        g.lineJoin = 'round'
+        g.lineCap = 'round'
+        g.fillStyle = d.strokeColor
+        g.fill(strokeToPath(d.points, d.strokeWidth, false))
+        g.restore()
+      } else {
+        drawSceneElement(g, d)
+      }
     } else if (move.current) {
       for (const el of move.current.live) {
         if (el.type === 'frame') strokeFrameOutline(g, bounds(el), viewRef.current.scale)
-        else if (el.type !== 'animation') drawSceneElement(g, el as DrawnElement)
+        else if (el.type === 'animation')
+          strokeAnimGhost(g, bounds(el), el.name, viewRef.current.scale)
+        else drawSceneElement(g, el as DrawnElement)
       }
     } else if (frameDraft.current) {
       const b = normBox(frameDraft.current.x, frameDraft.current.y, frameDraft.current.w, frameDraft.current.h)
@@ -229,6 +271,25 @@ export function WhiteboardCanvas({
     [],
   )
 
+  // iPadOS Safari swallows a rapid SECOND Apple Pencil tap (its double-tap /
+  // gesture recognizer eats it before any pointer/touch event is dispatched).
+  // preventDefault on a non-passive touchstart for stylus touches disengages
+  // that recognizer so the second stroke is delivered. Finger touches untouched.
+  useEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+    const onTouchStart = (e: TouchEvent) => {
+      for (const t of Array.from(e.touches)) {
+        if ((t as Touch & { touchType?: string }).touchType === 'stylus') {
+          e.preventDefault()
+          break
+        }
+      }
+    }
+    c.addEventListener('touchstart', onTouchStart, { passive: false })
+    return () => c.removeEventListener('touchstart', onTouchStart)
+  }, [])
+
   // Repaint once a referenced image finishes loading (async, not mid-draw).
   useEffect(() => subscribeImageLoad(() => paintStatic()), [paintStatic])
 
@@ -278,13 +339,22 @@ export function WhiteboardCanvas({
 
   const onPointerDown = (e: React.PointerEvent) => {
     const p = rel(e.nativeEvent)
-    pointers.current.set(e.pointerId, p)
-    canvasRef.current?.setPointerCapture(e.pointerId)
-    if (pointers.current.size >= 2) {
-      startPinch()
-      return
-    }
     const isTouch = e.pointerType === 'touch'
+    // Palm rejection: ignore a touch that lands while a pen operation is in
+    // progress (drawing / dragging / lasso / frame), so a resting hand can't
+    // start a pan that hijacks the stroke.
+    if (isTouch && (draft.current || move.current || lasso.current || frameDraft.current)) return
+    capture(e.pointerId)
+    // Only touch pointers drive pan/pinch. A pen/mouse must never be counted —
+    // otherwise a leftover pointerId from a fast previous stroke makes the next
+    // pen down look like a 2-finger pinch and the stroke is dropped.
+    if (isTouch) {
+      pointers.current.set(e.pointerId, p)
+      if (pointers.current.size >= 2) {
+        startPinch()
+        return
+      }
+    }
     const w = toWorld(p.x, p.y)
 
     if (tool === 'select') {
@@ -365,9 +435,33 @@ export function WhiteboardCanvas({
   const onPointerMove = (e: React.PointerEvent) => {
     const p = rel(e.nativeEvent)
     if (pointers.current.has(e.pointerId)) pointers.current.set(e.pointerId, p)
+    // Recover a dropped `pointerdown` on a fast hover→contact (hover-capable
+    // Apple Pencil): start a freedraw on the first contact move.
+    if (
+      !gesture.current &&
+      !draft.current &&
+      !move.current &&
+      !lasso.current &&
+      !frameDraft.current &&
+      tool === 'pen' &&
+      e.pointerType !== 'touch' &&
+      ((e.pressure ?? 0) > 0 || (e.buttons & 1) === 1)
+    ) {
+      const w = toWorld(p.x, p.y)
+      draft.current = newDraft(w.x, w.y, e.pressure && e.pressure > 0 ? e.pressure : 0.5)
+      capture(e.pointerId)
+      renderBg()
+      schedule(paintLive)
+      return
+    }
+    // A pen operation in progress takes priority over any (palm) gesture:
+    // ignore touch moves entirely, and route the pen's own moves to its draft
+    // rather than letting a stray pan/pinch consume them.
+    const penOp = !!(draft.current || move.current || lasso.current || frameDraft.current)
+    if (penOp && e.pointerType === 'touch') return
     const g = gesture.current
 
-    if (g?.kind === 'pinch') {
+    if (g && !penOp && g.kind === 'pinch') {
       const pts = [...pointers.current.values()]
       if (pts.length < 2) return
       const [a, b] = pts
@@ -380,7 +474,7 @@ export function WhiteboardCanvas({
       onViewChange({ scale, tx: cx1 - scale * wx, ty: cy1 - scale * wy })
       return
     }
-    if (g?.kind === 'pan') {
+    if (g && !penOp && g.kind === 'pan') {
       onViewChange({ scale: viewRef.current.scale, tx: g.tx0 + (p.x - g.sx), ty: g.ty0 + (p.y - g.sy) })
       return
     }
@@ -504,6 +598,7 @@ export function WhiteboardCanvas({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onPointerLeave={onPointerUp}
     />
   )
 }

@@ -2,14 +2,22 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { Doc, Pt, Tool } from '../state/docReducer'
 import { isBirthOnFrame, isStrokeOnFrame } from '../state/docReducer'
 import { subscribeImageLoad, getImage } from '../lib/imageCache'
-import { pointInPolygon } from '../scene/elements/geometry'
+import { bounds, boxInPolygon, hitTest, normBox, pointInPolygon, translate } from '../scene/elements/geometry'
+import { drawSceneElement } from '../scene/elements/draw'
+import { makeId } from '../scene/sceneModel'
+import type { BoxEl, DrawnElement, LineEl } from '../scene/elements/types'
 import { imageBounds, pointInRect, strokeBounds, unionRect } from '../editor/lassoGeom'
 import { renderFrame } from './render'
 import { strokeToPath } from './strokePath'
 
+/** A draggable shape draft (rect/ellipse = BoxEl, line/arrow = LineEl). Text is
+ *  not drafted on the canvas — it goes through the textarea overlay. */
+type ShapeDraft = BoxEl | LineEl
+
 export interface LassoSelection {
   strokeIds: string[]
   imageIds: string[]
+  shapeIds: string[]
 }
 
 /** Viewport transform: screen = world * scale + t. */
@@ -31,6 +39,8 @@ interface Props {
   displayFrame: number | null
   color: string
   size: number
+  /** Fill for new rect/ellipse shapes ('transparent' = none). */
+  fill: string
   tool: Tool
   /** Reject touch input (palm/finger) so only Apple Pencil / mouse draws. */
   penOnly: boolean
@@ -39,6 +49,12 @@ interface Props {
   height: number
   onStrokeComplete: (points: Pt[]) => void
   onErase: (id: string) => void
+  /** A shape (rect/ellipse/line/arrow) was dragged out. */
+  onShapeComplete: (shape: ShapeDraft) => void
+  /** Text tool tapped — open the textarea overlay at this world point. */
+  onStartText: (worldX: number, worldY: number) => void
+  /** Eraser hit a shape. */
+  onEraseShape: (id: string) => void
   /** Fires when a stroke starts/ends so the UI chrome can lock out touches. */
   onDrawingChange?: (active: boolean) => void
   /** Commit a new viewport (after a pinch/pan gesture or wheel zoom). */
@@ -59,6 +75,7 @@ export function DrawCanvas({
   displayFrame,
   color,
   size,
+  fill,
   tool,
   penOnly,
   view,
@@ -66,6 +83,9 @@ export function DrawCanvas({
   height,
   onStrokeComplete,
   onErase,
+  onShapeComplete,
+  onStartText,
+  onEraseShape,
   onDrawingChange,
   onViewChange,
   selection,
@@ -90,6 +110,8 @@ export function DrawCanvas({
   // Lasso tool: in-progress polygon (world coords) / group-move delta.
   const lasso = useRef<number[][] | null>(null)
   const selMove = useRef<{ sx: number; sy: number; dx: number; dy: number } | null>(null)
+  // Shape tools: in-progress rect/ellipse/line/arrow draft (world coords).
+  const shapeDraft = useRef<ShapeDraft | null>(null)
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
   const interactive = displayFrame === null
 
@@ -102,6 +124,12 @@ export function DrawCanvas({
     const p = e.pressure
     return [(x - view.tx) / view.scale, (y - view.ty) / view.scale, p && p > 0 ? p : 0.5]
   }
+  // Intentionally a no-op: we do NOT use setPointerCapture. On iPadOS Safari,
+  // the pointer-capture lifecycle (gotpointercapture → up → lostpointercapture/
+  // leave) swallows the next quickly-arriving pointerdown, so a fast second
+  // stroke gets no events at all. The canvas covers the whole drawing area and
+  // touch-action:none is set, so capture isn't needed.
+  const capture = (_id: number) => {}
   const setViewTransform = useCallback(
     (g: CanvasRenderingContext2D, v: View) => {
       g.setTransform(dpr * v.scale, 0, 0, dpr * v.scale, dpr * v.tx, dpr * v.ty)
@@ -152,10 +180,12 @@ export function DrawCanvas({
     if (!g) return
     const sset = new Set(sel.strokeIds)
     const iset = new Set(sel.imageIds)
+    const shset = new Set(sel.shapeIds)
     const filtered: Doc = {
       ...doc,
       strokes: doc.strokes.filter((s) => !sset.has(s.id)),
       images: (doc.images ?? []).filter((im) => !iset.has(im.id)),
+      shapes: (doc.shapes ?? []).filter((sh) => !shset.has(sh.id)),
     }
     g.setTransform(1, 0, 0, 1, 0, 0)
     g.clearRect(0, 0, bg.width, bg.height)
@@ -193,6 +223,7 @@ export function DrawCanvas({
       const { dx, dy } = selMove.current
       const sset = new Set(selection.strokeIds)
       const iset = new Set(selection.imageIds)
+      const shset = new Set(selection.shapeIds)
       g.save()
       g.translate(dx, dy)
       for (const s of doc.strokes) {
@@ -201,11 +232,20 @@ export function DrawCanvas({
         g.fill(strokeToPath(s.points, s.size))
       }
       g.restore()
+      for (const sh of doc.shapes ?? []) {
+        if (!shset.has(sh.id)) continue
+        drawSceneElement(g, translate(sh, dx, dy) as DrawnElement)
+      }
       for (const im of doc.images ?? []) {
         if (!iset.has(im.id)) continue
         const img = getImage(im.src)
         if (img) g.drawImage(img, im.x + dx, im.y + dy, im.w, im.h)
       }
+      return
+    }
+    // Shape being dragged out.
+    if (shapeDraft.current) {
+      drawSceneElement(g, shapeDraft.current as DrawnElement)
       return
     }
     if (points.current.length === 0) return
@@ -262,6 +302,25 @@ export function DrawCanvas({
     },
     [],
   )
+
+  // iPadOS Safari swallows a rapid SECOND Apple Pencil tap (its double-tap /
+  // gesture recognizer eats it before any pointer/touch event fires).
+  // preventDefault on a non-passive touchstart for stylus touches disengages
+  // that recognizer so the second stroke is delivered. Finger touches untouched.
+  useEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+    const onTouchStart = (e: TouchEvent) => {
+      for (const t of Array.from(e.touches)) {
+        if ((t as Touch & { touchType?: string }).touchType === 'stylus') {
+          e.preventDefault()
+          break
+        }
+      }
+    }
+    c.addEventListener('touchstart', onTouchStart, { passive: false })
+    return () => c.removeEventListener('touchstart', onTouchStart)
+  }, [])
 
   // --- Gestures ---------------------------------------------------------------
 
@@ -328,6 +387,19 @@ export function DrawCanvas({
         return
       }
     }
+    // Then shapes (topmost first), via the shared world-space hit test.
+    const wx = (sx - view.tx) / view.scale
+    const wy = (sy - view.ty) / view.scale
+    const tol = 8 / view.scale
+    const shapes = doc.shapes ?? []
+    for (let i = shapes.length - 1; i >= 0; i--) {
+      const sh = shapes[i]
+      if (!isBirthOnFrame(sh.birthFrame, currentFrame, doc.mode)) continue
+      if (hitTest(sh, wx, wy, tol)) {
+        onEraseShape(sh.id)
+        return
+      }
+    }
   }
 
   // --- Lasso (animation editor) ----------------------------------------------
@@ -335,15 +407,18 @@ export function DrawCanvas({
   const selectionRect = (sel: LassoSelection) => {
     const sset = new Set(sel.strokeIds)
     const iset = new Set(sel.imageIds)
+    const shset = new Set(sel.shapeIds)
     const rects = []
     for (const s of doc.strokes) if (sset.has(s.id)) rects.push(strokeBounds(s))
     for (const im of doc.images ?? []) if (iset.has(im.id)) rects.push(imageBounds(im))
+    for (const sh of doc.shapes ?? []) if (shset.has(sh.id)) rects.push(bounds(sh))
     return unionRect(rects)
   }
 
   const computeLassoSelection = (poly: number[][]): LassoSelection => {
     const strokeIds: string[] = []
     const imageIds: string[] = []
+    const shapeIds: string[] = []
     for (const s of doc.strokes) {
       if (!isStrokeOnFrame(s, currentFrame, doc.mode)) continue
       let hit = s.points.some(([x, y]) => pointInPolygon(x, y, poly))
@@ -365,7 +440,19 @@ export function DrawCanvas({
       ]
       if (pts.some(([x, y]) => pointInPolygon(x, y, poly))) imageIds.push(im.id)
     }
-    return { strokeIds, imageIds }
+    for (const sh of doc.shapes ?? []) {
+      if (!isBirthOnFrame(sh.birthFrame, currentFrame, doc.mode)) continue
+      if (boxInPolygon(bounds(sh), poly)) shapeIds.push(sh.id)
+    }
+    return { strokeIds, imageIds, shapeIds }
+  }
+
+  // Build a fresh shape draft for the current shape tool (mirrors WhiteboardCanvas).
+  const newShapeDraft = (wx: number, wy: number): ShapeDraft | null => {
+    const base = { id: makeId(), strokeColor: color, strokeWidth: size, fill }
+    if (tool === 'line' || tool === 'arrow') return { ...base, type: tool, x1: wx, y1: wy, x2: wx, y2: wy }
+    if (tool === 'rect' || tool === 'ellipse') return { ...base, type: tool, x: wx, y: wy, w: 0, h: 0 }
+    return null
   }
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -373,12 +460,14 @@ export function DrawCanvas({
     const ne = e.nativeEvent
     if (e.pointerType === 'touch') {
       touches.current.set(e.pointerId, screenPos(ne))
-      canvasRef.current?.setPointerCapture(e.pointerId)
+      capture(e.pointerId)
       if (touches.current.size >= 2) {
         startGesture()
         return
       }
-      if (penOnly || sawPen.current) return // single touch never draws in pen mode
+      if (penOnly || sawPen.current) {
+        return // single touch never draws in pen mode
+      }
       // else: finger-drawing allowed, fall through
     } else if (e.pointerType === 'pen') {
       sawPen.current = true
@@ -386,10 +475,11 @@ export function DrawCanvas({
     // Lasso tool: drag inside an existing selection → group move; else draw a
     // polygon. (finger pan/pinch already handled above.)
     if (tool === 'lasso') {
-      canvasRef.current?.setPointerCapture(e.pointerId)
+      capture(e.pointerId)
       const [wx, wy] = toWorldPt(ne)
       const sel = selection
-      const hasSel = !!sel && (sel.strokeIds.length > 0 || sel.imageIds.length > 0)
+      const hasSel =
+        !!sel && (sel.strokeIds.length > 0 || sel.imageIds.length > 0 || sel.shapeIds.length > 0)
       if (hasSel && pointInRect(wx, wy, selectionRect(sel!))) {
         selMove.current = { sx: wx, sy: wy, dx: 0, dy: 0 }
         renderBgExceptSelection(sel!)
@@ -405,14 +495,31 @@ export function DrawCanvas({
     if (tool === 'image') return
     const { x, y } = screenPos(ne)
     if (tool === 'eraser') {
-      canvasRef.current?.setPointerCapture(e.pointerId)
+      capture(e.pointerId)
       eraseAt(x, y)
       return
     }
-    if (e.pointerType !== 'touch') canvasRef.current?.setPointerCapture(e.pointerId)
+    // Text tool: open the textarea overlay at the tapped world point.
+    if (tool === 'text') {
+      const [wx, wy] = toWorldPt(ne)
+      onStartText(wx, wy)
+      return
+    }
+    // Shape tools: start a draft, finished on pointerup.
+    if (tool === 'rect' || tool === 'ellipse' || tool === 'line' || tool === 'arrow') {
+      capture(e.pointerId)
+      const [wx, wy] = toWorldPt(ne)
+      shapeDraft.current = newShapeDraft(wx, wy)
+      onDrawingChange?.(true)
+      paintLive()
+      return
+    }
+    // Set stroke state BEFORE capturing: on a fast hover→contact re-tap the
+    // capture can throw, and we must not lose the stroke even if it does.
     drawing.current = true
     onDrawingChange?.(true)
     points.current = [toWorldPt(ne)]
+    capture(e.pointerId)
     paintLive()
   }
 
@@ -440,7 +547,38 @@ export function DrawCanvas({
       schedule(paintLive)
       return
     }
-    if (!drawing.current) return
+    if (shapeDraft.current) {
+      const [wx, wy] = toWorldPt(ne)
+      const d = shapeDraft.current
+      switch (d.type) {
+        case 'line':
+        case 'arrow':
+          d.x2 = wx
+          d.y2 = wy
+          break
+        case 'rect':
+        case 'ellipse':
+          d.w = wx - d.x
+          d.h = wy - d.y
+          break
+      }
+      schedule(paintLive)
+      return
+    }
+    // Recover a stroke whose `pointerdown` never arrived (fast hover→contact on
+    // hover-capable Apple Pencils): begin drawing on the first contact move.
+    if (!drawing.current) {
+      const contact = (e.pressure ?? 0) > 0 || (e.buttons & 1) === 1
+      if (tool === 'pen' && e.pointerType !== 'touch' && contact) {
+        drawing.current = true
+        onDrawingChange?.(true)
+        points.current = []
+        capture(e.pointerId)
+        // fall through to push this move's points
+      } else {
+        return
+      }
+    }
     if (e.pointerType === 'touch' && (penOnly || sawPen.current)) return
     const coalesced =
       typeof ne.getCoalescedEvents === 'function' ? ne.getCoalescedEvents() : [ne]
@@ -483,6 +621,38 @@ export function DrawCanvas({
       }
       if (dx !== 0 || dy !== 0) onSelectionMove?.(dx, dy)
       paintStatic()
+      return
+    }
+    if (shapeDraft.current) {
+      const d = shapeDraft.current
+      shapeDraft.current = null
+      onDrawingChange?.(false)
+      if (rafId.current != null) {
+        cancelAnimationFrame(rafId.current)
+        rafId.current = null
+      }
+      switch (d.type) {
+        case 'rect':
+        case 'ellipse': {
+          const b = normBox(d.x, d.y, d.w, d.h)
+          if (b.w < 2 && b.h < 2) {
+            paintStatic() // a tap, not a drag — drop the draft
+            return
+          }
+          onShapeComplete({ ...d, x: b.x, y: b.y, w: b.w, h: b.h })
+          break
+        }
+        case 'line':
+        case 'arrow': {
+          if (Math.hypot(d.x2 - d.x1, d.y2 - d.y1) < 2) {
+            paintStatic()
+            return
+          }
+          onShapeComplete(d)
+          break
+        }
+      }
+      // Committed: the doc effect repaints with the new shape (no flash).
       return
     }
     if (!interactive || !drawing.current) return

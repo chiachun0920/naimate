@@ -53,12 +53,37 @@ function outlineToSvg(points: number[][]): string {
   return d.join(' ')
 }
 
+// Cache built paths for committed strokes, keyed by the `points` array itself.
+// The same stroke is drawn across many timeline thumbnails + the main canvas +
+// export; without this each draw re-ran getStroke (O(frames × strokes), the ~4s
+// timeline-expand freeze). The points reference is stable until a stroke is
+// edited (translate/edit makes a new array → automatic miss); a WeakMap GCs with
+// the stroke. Only committed strokes (isLast=true) are cached — an in-progress
+// stroke mutates its array in place.
+const pathCache = new WeakMap<Pt[], Map<string, Path2D>>()
+
+function buildPath(points: Pt[], size: number, isLast: boolean): Path2D {
+  const pts = smoothPoints(points)
+  const outline = getStroke(pts, { size, ...STROKE_OPTIONS, last: isLast })
+  return new Path2D(outlineToSvg(outline as number[][]))
+}
+
 /**
  * Build a fillable Path2D for a stroke at the given base size.
  * Pass `isLast = false` for an in-progress stroke so the tail isn't capped yet.
  */
 export function strokeToPath(points: Pt[], size: number, isLast = true): Path2D {
-  const pts = smoothPoints(points)
-  const outline = getStroke(pts, { size, ...STROKE_OPTIONS, last: isLast })
-  return new Path2D(outlineToSvg(outline as number[][]))
+  if (!isLast) return buildPath(points, size, false) // in-progress: never cache
+  let bySize = pathCache.get(points)
+  if (!bySize) {
+    bySize = new Map()
+    pathCache.set(points, bySize)
+  }
+  const key = String(size)
+  let path = bySize.get(key)
+  if (!path) {
+    path = buildPath(points, size, true)
+    bySize.set(key, path)
+  }
+  return path
 }

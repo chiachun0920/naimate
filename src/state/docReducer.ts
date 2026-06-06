@@ -7,7 +7,21 @@
 // edited — deleting a stroke removes it from every frame, and a stroke added
 // while editing frame K appears from frame K onward.
 
+import type { BoxEl, LineEl, TextEl } from '../scene/elements/types'
+
 export type Pt = [x: number, y: number, pressure: number]
+
+/**
+ * A crisp vector shape on a frame. Same geometry/style as the whiteboard's
+ * shapes (so we can reuse drawSceneElement/bounds/hitTest/translate), plus the
+ * animation's frame fields. (Type-only import — types.ts imports Doc/Pt back, so
+ * this would be a cycle at runtime, but type imports are erased.)
+ */
+type FrameFields = { birthFrame: number; seed?: boolean }
+export type AnimShape =
+  | (BoxEl & FrameFields)
+  | (LineEl & FrameFields)
+  | (TextEl & FrameFields)
 
 export interface Stroke {
   id: string
@@ -45,18 +59,23 @@ export type AnimMode = 'additive' | 'independent'
 export interface Doc {
   strokes: Stroke[]
   images: AnimImage[]
+  shapes: AnimShape[]
   frameCount: number
   fps: number
   mode: AnimMode
 }
 
-export type Tool = 'pen' | 'eraser' | 'image' | 'lasso'
+export type Tool = 'pen' | 'eraser' | 'image' | 'lasso' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text'
 
 export interface EditorState {
   doc: Doc
   currentFrame: number
   color: string
   size: number
+  /** Fill for new rect/ellipse shapes ('transparent' = none). */
+  fill: string
+  /** Font size for new text shapes. */
+  fontSize: number
   tool: Tool
   /** Reject touch input (palm/finger) so only Apple Pencil / mouse draws. */
   penOnly: boolean
@@ -70,8 +89,11 @@ export type Action =
   | { type: 'removeImage'; id: string }
   | { type: 'translateStrokes'; ids: string[]; dx: number; dy: number }
   | { type: 'translateImages'; ids: string[]; dx: number; dy: number }
+  | { type: 'translateShapes'; ids: string[]; dx: number; dy: number }
   | { type: 'removeStrokes'; ids: string[] }
   | { type: 'removeImages'; ids: string[] }
+  | { type: 'removeShapes'; ids: string[] }
+  | { type: 'addShape'; shape: BoxEl | LineEl | TextEl }
   | { type: 'commitFrame' }
   | { type: 'selectFrame'; index: number }
   | { type: 'deleteFrame'; index: number }
@@ -80,18 +102,22 @@ export type Action =
   | { type: 'loadDoc'; doc: Doc }
   | { type: 'setColor'; color: string }
   | { type: 'setSize'; size: number }
+  | { type: 'setFill'; fill: string }
+  | { type: 'setFontSize'; fontSize: number }
   | { type: 'setTool'; tool: Tool }
   | { type: 'setFps'; fps: number }
   | { type: 'setPenOnly'; value: boolean }
   | { type: 'setMode'; mode: AnimMode }
 
-export const DEFAULT_DOC: Doc = { strokes: [], images: [], frameCount: 1, fps: 6, mode: 'additive' }
+export const DEFAULT_DOC: Doc = { strokes: [], images: [], shapes: [], frameCount: 1, fps: 6, mode: 'additive' }
 
 export const DEFAULT_STATE: EditorState = {
   doc: DEFAULT_DOC,
   currentFrame: 0,
   color: '#1a1a1a',
   size: 8,
+  fill: 'transparent',
+  fontSize: 24,
   tool: 'pen',
   penOnly: true,
 }
@@ -114,7 +140,12 @@ export function isStrokeOnFrame(s: Stroke, frameIndex: number, mode: AnimMode): 
 
 /** The document has no content yet, so the animation mode is still selectable. */
 export function isDocEmpty(doc: Doc): boolean {
-  return doc.strokes.length === 0 && (doc.images?.length ?? 0) === 0 && doc.frameCount === 1
+  return (
+    doc.strokes.length === 0 &&
+    (doc.images?.length ?? 0) === 0 &&
+    (doc.shapes?.length ?? 0) === 0 &&
+    doc.frameCount === 1
+  )
 }
 
 export function reducer(state: EditorState, action: Action): EditorState {
@@ -188,6 +219,27 @@ export function reducer(state: EditorState, action: Action): EditorState {
         },
       }
     }
+    case 'translateShapes': {
+      const ids = new Set(action.ids)
+      const { dx, dy } = action
+      // Inline translate (avoids a runtime import of scene geometry into the state layer).
+      return {
+        ...state,
+        doc: {
+          ...doc,
+          shapes: (doc.shapes ?? []).map((sh) => {
+            if (!ids.has(sh.id)) return sh
+            switch (sh.type) {
+              case 'line':
+              case 'arrow':
+                return { ...sh, x1: sh.x1 + dx, y1: sh.y1 + dy, x2: sh.x2 + dx, y2: sh.y2 + dy }
+              default:
+                return { ...sh, x: sh.x + dx, y: sh.y + dy }
+            }
+          }),
+        },
+      }
+    }
     case 'removeStrokes': {
       const ids = new Set(action.ids)
       return { ...state, doc: { ...doc, strokes: doc.strokes.filter((s) => !ids.has(s.id)) } }
@@ -195,6 +247,14 @@ export function reducer(state: EditorState, action: Action): EditorState {
     case 'removeImages': {
       const ids = new Set(action.ids)
       return { ...state, doc: { ...doc, images: doc.images.filter((im) => !ids.has(im.id)) } }
+    }
+    case 'removeShapes': {
+      const ids = new Set(action.ids)
+      return { ...state, doc: { ...doc, shapes: (doc.shapes ?? []).filter((sh) => !ids.has(sh.id)) } }
+    }
+    case 'addShape': {
+      const shape: AnimShape = { ...action.shape, birthFrame: state.currentFrame }
+      return { ...state, doc: { ...doc, shapes: [...(doc.shapes ?? []), shape] } }
     }
     case 'commitFrame': {
       const newIndex = doc.frameCount
@@ -213,6 +273,12 @@ export function reducer(state: EditorState, action: Action): EditorState {
               .filter((im) => im.birthFrame === state.currentFrame)
               .map((im) => ({ ...im, id: makeId(), birthFrame: newIndex, seed: true }))
           : []
+      const copiedShapes =
+        doc.mode === 'independent'
+          ? (doc.shapes ?? [])
+              .filter((sh) => sh.birthFrame === state.currentFrame)
+              .map((sh) => ({ ...sh, id: makeId(), birthFrame: newIndex, seed: true }))
+          : []
       return {
         ...state,
         doc: {
@@ -220,6 +286,7 @@ export function reducer(state: EditorState, action: Action): EditorState {
           frameCount: newCount,
           strokes: [...doc.strokes, ...copiedStrokes],
           images: [...doc.images, ...copiedImages],
+          shapes: [...(doc.shapes ?? []), ...copiedShapes],
         },
         currentFrame: newIndex,
       }
@@ -227,7 +294,7 @@ export function reducer(state: EditorState, action: Action): EditorState {
     case 'selectFrame':
       return { ...state, currentFrame: clamp(action.index, 0, doc.frameCount - 1) }
     case 'deleteFrame': {
-      if (doc.frameCount <= 1) return { ...state, doc: { ...doc, strokes: [], images: [] } }
+      if (doc.frameCount <= 1) return { ...state, doc: { ...doc, strokes: [], images: [], shapes: [] } }
       const i = action.index
       // Drop content born on this frame, shift later births down by one.
       const strokes = doc.strokes
@@ -236,10 +303,13 @@ export function reducer(state: EditorState, action: Action): EditorState {
       const images = doc.images
         .filter((im) => im.birthFrame !== i)
         .map((im) => (im.birthFrame > i ? { ...im, birthFrame: im.birthFrame - 1 } : im))
+      const shapes = (doc.shapes ?? [])
+        .filter((sh) => sh.birthFrame !== i)
+        .map((sh) => (sh.birthFrame > i ? { ...sh, birthFrame: sh.birthFrame - 1 } : sh))
       const frameCount = doc.frameCount - 1
       return {
         ...state,
-        doc: { ...doc, strokes, images, frameCount },
+        doc: { ...doc, strokes, images, shapes, frameCount },
         currentFrame: clamp(state.currentFrame > i ? state.currentFrame - 1 : state.currentFrame, 0, frameCount - 1),
       }
     }
@@ -253,6 +323,10 @@ export function reducer(state: EditorState, action: Action): EditorState {
       return { ...state, color: action.color }
     case 'setSize':
       return { ...state, size: action.size }
+    case 'setFill':
+      return { ...state, fill: action.fill }
+    case 'setFontSize':
+      return { ...state, fontSize: action.fontSize }
     case 'setTool':
       return { ...state, tool: action.tool }
     case 'setFps':

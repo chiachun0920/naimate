@@ -33,7 +33,6 @@ const TOOLS: { id: Tool; label: string; title: string }[] = [
   { id: 'text', label: 'T', title: '文字' },
 ]
 const COLORS = ['#1a1a1a', '#e63946', '#1d7874', '#2a6fdb', '#f4a261', '#9b5de5']
-const WIDTHS = [2, 4, 8, 16]
 const FILLS = ['transparent', '#ffe066', '#a0e8af', '#a5d8ff', '#ffc9c9']
 const FONT_SIZES = [16, 24, 36, 56]
 
@@ -103,17 +102,16 @@ export function SceneToolbar({
         ))}
       </div>
 
-      <div className="group">
-        {WIDTHS.map((w) => (
-          <button
-            key={w}
-            className={`size${style.strokeWidth === w ? ' active' : ''}`}
-            title={`線寬 ${w}`}
-            onClick={() => onStyle({ strokeWidth: w })}
-          >
-            <span className="dot" style={{ width: w + 2, height: w + 2 }} />
-          </button>
-        ))}
+      <div className="group size-slider">
+        <input
+          type="range"
+          min={1}
+          max={40}
+          value={style.strokeWidth}
+          title={`線寬 ${style.strokeWidth}`}
+          onChange={(e) => onStyle({ strokeWidth: Number(e.target.value) })}
+        />
+        <span className="size-val">{style.strokeWidth}</span>
       </div>
 
       {tool === 'text' ? (

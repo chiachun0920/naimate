@@ -11,8 +11,20 @@ import type { LassoSelection } from '../canvas/DrawCanvas'
 import { usePlayback } from '../hooks/usePlayback'
 import { useDoc } from '../state/useDoc'
 import type { Doc, Tool } from '../state/docReducer'
+import { makeId } from '../scene/sceneModel'
+import type { TextEl } from '../scene/elements/types'
 
-const TOOL_ICON: Record<Tool, string> = { pen: '✏️', eraser: '🧽', image: '🖼', lasso: '⬚' }
+const TOOL_ICON: Record<Tool, string> = {
+  pen: '✏️',
+  eraser: '🧽',
+  image: '🖼',
+  lasso: '⬚',
+  rect: '▭',
+  ellipse: '◯',
+  line: '／',
+  arrow: '↗',
+  text: 'T',
+}
 
 const IMG_MAX = 360 // longest side of a freshly inserted image (world units)
 let imgIdCounter = 0
@@ -32,7 +44,7 @@ interface Props {
  */
 export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
   const [state, dispatch] = useDoc(initialDoc, onChange)
-  const { doc, currentFrame, color, size, tool, penOnly } = state
+  const { doc, currentFrame, color, size, fill, fontSize, tool, penOnly } = state
 
   const stageRef = useRef<HTMLDivElement>(null)
   const [stage, setStage] = useState({ width: 800, height: 600 })
@@ -43,10 +55,12 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null)
   const [chromeHidden, setChromeHidden] = useState(false)
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false)
-  const [lassoSel, setLassoSel] = useState<LassoSelection>({ strokeIds: [], imageIds: [] })
-  const clearLasso = () => setLassoSel({ strokeIds: [], imageIds: [] })
+  const [lassoSel, setLassoSel] = useState<LassoSelection>({ strokeIds: [], imageIds: [], shapeIds: [] })
+  const clearLasso = () => setLassoSel({ strokeIds: [], imageIds: [], shapeIds: [] })
   // Drop the lasso selection when the tool or the edited frame changes.
   useEffect(() => clearLasso(), [tool, currentFrame])
+  // Text tool: pending textarea overlay (world coords) while typing.
+  const [editingText, setEditingText] = useState<{ x: number; y: number; value: string } | null>(null)
 
   // While drawing, lock the chrome out of touches (palm-near-edge protection).
   // Restore a beat after the stroke ends so a lifting palm can't trigger a tap.
@@ -100,6 +114,26 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
     img.src = url
   }
 
+  const commitText = () => {
+    if (!editingText) return
+    const text = editingText.value.replace(/\s+$/, '')
+    if (text) {
+      const el: TextEl = {
+        type: 'text',
+        id: makeId(),
+        strokeColor: color,
+        strokeWidth: size,
+        fill,
+        x: editingText.x,
+        y: editingText.y,
+        text,
+        fontSize,
+      }
+      dispatch({ type: 'addShape', shape: el })
+    }
+    setEditingText(null)
+  }
+
   // Zoom around the viewport centre, keeping that point fixed.
   const zoomBy = (factor: number) => {
     const cx = stage.width / 2
@@ -118,6 +152,7 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
           displayFrame={preview ? playhead : null}
           color={color}
           size={size}
+          fill={fill}
           tool={tool}
           penOnly={penOnly}
           view={view}
@@ -125,6 +160,9 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
           height={stage.height}
           onStrokeComplete={(points) => dispatch({ type: 'addStroke', points })}
           onErase={(id) => dispatch({ type: 'removeStroke', id })}
+          onShapeComplete={(shape) => dispatch({ type: 'addShape', shape })}
+          onStartText={(x, y) => setEditingText({ x, y, value: '' })}
+          onEraseShape={(id) => dispatch({ type: 'removeShapes', ids: [id] })}
           onDrawingChange={handleDrawingChange}
           onViewChange={setView}
           selection={lassoSel}
@@ -132,6 +170,7 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
           onSelectionMove={(dx, dy) => {
             dispatch({ type: 'translateStrokes', ids: lassoSel.strokeIds, dx, dy })
             dispatch({ type: 'translateImages', ids: lassoSel.imageIds, dx, dy })
+            dispatch({ type: 'translateShapes', ids: lassoSel.shapeIds, dx, dy })
           }}
           onClearSelection={clearLasso}
         />
@@ -149,22 +188,51 @@ export function AnimationEditor({ doc: initialDoc, onChange, onClose }: Props) {
             }}
           />
         )}
-        {!isPlaying && tool === 'lasso' && (lassoSel.strokeIds.length > 0 || lassoSel.imageIds.length > 0) && (
-          <AnimationSelectionOverlay
-            doc={doc}
-            view={view}
-            selection={lassoSel}
-            onDelete={() => {
-              dispatch({ type: 'removeStrokes', ids: lassoSel.strokeIds })
-              dispatch({ type: 'removeImages', ids: lassoSel.imageIds })
-              clearLasso()
-            }}
-          />
-        )}
+        {!isPlaying &&
+          tool === 'lasso' &&
+          (lassoSel.strokeIds.length > 0 ||
+            lassoSel.imageIds.length > 0 ||
+            lassoSel.shapeIds.length > 0) && (
+            <AnimationSelectionOverlay
+              doc={doc}
+              view={view}
+              selection={lassoSel}
+              onDelete={() => {
+                dispatch({ type: 'removeStrokes', ids: lassoSel.strokeIds })
+                dispatch({ type: 'removeImages', ids: lassoSel.imageIds })
+                dispatch({ type: 'removeShapes', ids: lassoSel.shapeIds })
+                clearLasso()
+              }}
+            />
+          )}
         {!isPlaying && (
           <div className="stage-badge">
             編輯第 {currentFrame + 1} / {doc.frameCount} 幀 · {doc.mode === 'independent' ? '獨立' : '累進'}
           </div>
+        )}
+
+        {editingText && (
+          <textarea
+            className="text-editor"
+            autoFocus
+            value={editingText.value}
+            style={{
+              left: editingText.x * view.scale + view.tx,
+              top: editingText.y * view.scale + view.ty,
+              fontSize: fontSize * view.scale,
+              color,
+            }}
+            onChange={(e) => setEditingText((t) => (t ? { ...t, value: e.target.value } : t))}
+            onBlur={commitText}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                commitText()
+              } else if (e.key === 'Escape') {
+                setEditingText(null)
+              }
+            }}
+          />
         )}
       </div>
 
